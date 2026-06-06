@@ -31,7 +31,7 @@ Enter
 Sleep 4s
 
 # POST /ask sends a prompt (+ selected code as context) and returns the answer
-Type 'echo ''POST /ask  {"prompt":"explain this","context":"<selected code>"}  ->  {"response": "..."}'''
+Type "echo 'POST /ask {prompt, context}  returns  {response}  (one-shot, no file edits)'"
 Enter
 Sleep 4s
 
