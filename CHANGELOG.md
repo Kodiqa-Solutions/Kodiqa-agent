@@ -4,6 +4,16 @@ All notable changes to Kodiqa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.12.0] - 2026-06-06
+
+Rewind a whole turn — an "undo everything the AI just did" safety net.
+
+### Added
+- **`/rewind [n]`** — revert **all** file changes the AI made over the last `n` turns (default 1), not just one file at a time. It shows exactly which files will be restored or deleted (newly-created files are removed), asks for confirmation, then reverts. Works in any directory (it's content-based, no git required). Each turn's pre-edit file states are snapshotted automatically (last 10 turns kept).
+
+### Tests
+- `test_rewind.py` — turn-snapshot capture (new files → delete, edits → restore, first-touch wins), `do_rewind`, and the command's merge/confirm/pop logic. 427 total.
+
 ## [3.11.0] - 2026-06-06
 
 Cross-provider failover — your turn finishes even when a provider doesn't.

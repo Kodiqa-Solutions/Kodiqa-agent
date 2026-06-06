@@ -25,6 +25,9 @@ _logger = logging.getLogger("kodiqa")
 _undo_buffer = defaultdict(lambda: deque(maxlen=10))
 # Per-file redo stack — populated by do_undo_edit, cleared by any fresh edit.
 _redo_buffer = defaultdict(lambda: deque(maxlen=10))
+# Per-turn snapshot for /rewind: {abs_path: pre-turn content, or None if the file
+# didn't exist before this turn}. First touch of a path wins (true pre-turn state).
+_turn_snapshot = {}
 
 
 def _push_undo(abs_path, content):
@@ -32,10 +35,41 @@ def _push_undo(abs_path, content):
 
     A fresh edit always discards any pending redo (standard undo/redo semantics),
     so /redo only ever replays edits that were just undone, never a stale branch.
+    Also records the file's pre-turn state once per turn for /rewind.
     """
     _undo_buffer[abs_path].append(content)
     if abs_path in _redo_buffer:
         _redo_buffer[abs_path].clear()
+    _turn_snapshot.setdefault(abs_path, content)  # None = file was created this turn
+
+
+def get_turn_snapshot():
+    """The current turn's pre-edit file states ({path: content|None}) for /rewind."""
+    return dict(_turn_snapshot)
+
+
+def clear_turn_snapshot():
+    _turn_snapshot.clear()
+
+
+def do_rewind(snapshot):
+    """Restore files to a turn snapshot: rewrite each to its pre-turn content, or
+    delete files that didn't exist before. Returns {restored, deleted, errors}."""
+    restored, deleted, errors = [], [], []
+    for path, orig in snapshot.items():
+        try:
+            if orig is None:
+                if os.path.isfile(path):
+                    os.remove(path)
+                    deleted.append(path)
+            else:
+                os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+                with open(path, "w") as f:
+                    f.write(orig)
+                restored.append(path)
+        except Exception as e:
+            errors.append((path, str(e)))
+    return {"restored": restored, "deleted": deleted, "errors": errors}
 
 # ── Hooks ──
 _hooks = {}

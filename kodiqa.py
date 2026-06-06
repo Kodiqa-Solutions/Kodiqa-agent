@@ -47,6 +47,7 @@ from actions import (
     set_batch_mode, get_edit_queue, clear_edit_queue, apply_queued_edit, reject_queued_edit,
     do_undo_edit, do_redo_edit, redo_paths, _undo_buffer, set_hooks,
     get_change_log, clear_change_log,
+    get_turn_snapshot, clear_turn_snapshot, do_rewind,
 )
 from web import set_search_engine, get_search_engine, set_google_api_keys, get_google_api_keys
 from tools import CLAUDE_TOOLS
@@ -598,6 +599,7 @@ class Kodiqa:
         # Cross-provider failover: on a hard API failure, auto-retry the request on
         # the next configured provider (only triggers on failure; notifies loudly).
         self.failover_enabled = self.settings.get("failover", True)
+        self._turn_stack = []  # per-turn pre-edit file snapshots for /rewind (cap 10)
         self.mcp_lazy = self.settings.get("mcp_lazy", True)
         self._mcp_usage_file = os.path.join(KODIQA_DIR, "mcp_usage.json")
         self._mcp_usage = self._load_mcp_usage()
@@ -684,6 +686,7 @@ class Kodiqa:
         ("/history", (), "_cmd_history", "Conversation", "", "Browse and resume past sessions"),
         ("/undo", (), "_cmd_undo", "Conversation", "[path]", "Undo last file edit"),
         ("/redo", (), "_cmd_redo", "Conversation", "[path]", "Re-apply an undone edit"),
+        ("/rewind", (), "_cmd_rewind", "Conversation", "[n]", "Revert ALL file changes from the last n turns"),
 
         ("/mode", (), "_cmd_mode", "Modes & permissions", "[mode]", "Permission mode: default/relaxed/auto"),
         ("/plan", (), "_cmd_plan", "Modes & permissions", "", "Toggle plan mode"),
@@ -1791,6 +1794,50 @@ class Kodiqa:
             else:
                 self.console.print("[dim]Nothing to redo. Use /undo first.[/]")
 
+    def _cmd_rewind(self, arg):
+        """Revert ALL file changes made by the AI over the last n turns (default 1)."""
+        if not self._turn_stack:
+            self.console.print("[dim]Nothing to rewind — no file changes recorded this session.[/]")
+            return
+        try:
+            n = max(1, int(arg)) if arg.strip() else 1
+        except ValueError:
+            self.console.print("[red]Usage: /rewind [n]  (n = how many turns to undo)[/]")
+            return
+        n = min(n, len(self._turn_stack))
+        # Merge the last n turns; the OLDEST snapshot of each path wins (its true
+        # pre-rewind state), so reverting multiple turns restores correctly.
+        turns = self._turn_stack[-n:]
+        merged = {}
+        for snap in turns:  # oldest → newest
+            for path, orig in snap.items():
+                merged.setdefault(path, orig)
+        creates = [p for p, o in merged.items() if o is None]
+        edits = [p for p, o in merged.items() if o is not None]
+        self.console.print(f"[bold]Rewind {n} turn(s)[/] — affects {len(merged)} file(s):")
+        for p in edits:
+            rel = os.path.relpath(p, self.cwd) if p.startswith(self.cwd) else p
+            self.console.print(f"  [yellow]restore[/] {rel}")
+        for p in creates:
+            rel = os.path.relpath(p, self.cwd) if p.startswith(self.cwd) else p
+            self.console.print(f"  [red]delete[/]  {rel} [dim](created this turn)[/]")
+        try:
+            answer = Prompt.ask("Revert these file changes?", choices=["y", "n"], default="n")
+        except (EOFError, KeyboardInterrupt):
+            self.console.print("\n[dim]Cancelled.[/]")
+            return
+        if answer.lower() != "y":
+            self.console.print("[dim]Cancelled.[/]")
+            return
+        result = do_rewind(merged)
+        del self._turn_stack[-n:]
+        self.console.print(
+            f"[green]Rewound.[/] {len(result['restored'])} restored, {len(result['deleted'])} deleted."
+            + (f" [red]{len(result['errors'])} errors[/]" if result["errors"] else ""))
+        if self.auto_commit and self.git_info:
+            self.console.print("[dim]Note: auto-commit is on — the reverted files are working-tree changes; "
+                               "commit them or git reset as needed.[/]")
+
     def _cmd_diff(self, arg):
         try:
             cmd = ["git", "diff"] + (arg.split() if arg else [])
@@ -2555,7 +2602,8 @@ class Kodiqa:
             return
         self._check_cost_optimizer(user_msg)
         self._chat_start_time = time.time()
-        clear_change_log()  # track this turn's file edits for the end-of-turn diffstat
+        clear_change_log()      # for the end-of-turn diffstat
+        clear_turn_snapshot()   # for /rewind (pre-turn file states)
         if self.multi_models:
             self._chat_multi(user_msg)
         elif is_claude_model(self.model) or self._is_live_claude(self.model):
@@ -2567,6 +2615,10 @@ class Kodiqa:
             else:
                 self._chat_ollama(user_msg)
         self._show_diffstat()
+        snapshot = get_turn_snapshot()
+        if snapshot:  # remember this turn's file changes so /rewind can undo them
+            self._turn_stack.append(snapshot)
+            self._turn_stack = self._turn_stack[-10:]
 
     def _show_diffstat(self):
         """Print an end-of-turn rollup: N files changed, +added / -removed lines."""

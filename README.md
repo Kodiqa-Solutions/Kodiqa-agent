@@ -7,16 +7,16 @@
 </p>
 
 <p align="center">
-  <em>73 slash commands &bull; 26 tools &bull; lazy MCP tools &bull; RAG search &bull; custom personas &bull; plugins &bull; sub-agents &bull; LSP &bull; 5 themes</em>
+  <em>75 slash commands &bull; 26 tools &bull; lazy MCP tools &bull; RAG search &bull; custom personas &bull; plugins &bull; sub-agents &bull; LSP &bull; 5 themes</em>
 </p>
 
 <p align="center">
   <a href="#install"><img src="https://img.shields.io/badge/python-3.9+-blue?logo=python&logoColor=white" alt="Python 3.9+"/></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-purple" alt="License"/></a>
   <a href="https://github.com/Kodiqa-Solutions/Kodiqa-agent/actions/workflows/ci.yml"><img src="https://github.com/Kodiqa-Solutions/Kodiqa-agent/actions/workflows/ci.yml/badge.svg" alt="CI"/></a>
-  <a href="#testing"><img src="https://img.shields.io/badge/tests-383%20passing-brightgreen" alt="Tests"/></a>
+  <a href="#testing"><img src="https://img.shields.io/badge/tests-427%20passing-brightgreen" alt="Tests"/></a>
   <a href="#api-setup"><img src="https://img.shields.io/badge/providers-7-cyan" alt="7 Providers"/></a>
-  <a href="#26-tools"><img src="https://img.shields.io/badge/commands-73-orange" alt="73 Commands"/></a>
+  <a href="#26-tools"><img src="https://img.shields.io/badge/commands-75-orange" alt="75 Commands"/></a>
 </p>
 
 <p align="center">
@@ -66,7 +66,7 @@
 | **Desktop app / IDE** | No | Yes (VS Code) | No | No | Yes (VS Code, desktop) |
 | **Install** | `pip install kodiqa` | `npm install -g` | `pip install` | `npm install -g` | `go install` / `npm` |
 | **Language** | Python | TypeScript | Python | TypeScript | Go |
-| **Tests** | 383 | Yes | Yes | Yes | Yes |
+| **Tests** | 427 | Yes | Yes | Yes | Yes |
 | **Open source** | Yes (AGPL-3.0) | Yes (Apache-2.0) | Yes (Apache-2.0) | Yes (Apache-2.0) | Yes (MIT) |
 
 **Kodiqa's unique advantages**: free local models, 7 API providers, multi-model consensus, custom plugins, sub-agents, LSP integration, 5 themes, project templates, batch edit review, conversation branching, budget limits, auto-lint, and auto model discovery — features no other agent offers together.
@@ -110,7 +110,7 @@ kodiqa
 - **Token tracking** — cost per response, session totals, tok/s speed
 - **Prompt caching** — Claude API cache for faster + cheaper responses
 - **Auto-retry** — exponential backoff on API errors (429, 5xx, timeouts)
-- **Undo / redo** — per-file undo buffer (up to 10 levels) with `/redo` to re-apply
+- **Undo / redo / rewind** — per-file undo (up to 10 levels) with `/redo`, plus `/rewind` to revert ALL file changes from the last turn(s)
 - **Checkpoints** — save/restore conversation state
 - **Session export** — export conversation to markdown
 - **Git-aware context** — auto-detects git repo, includes diff stats
@@ -196,6 +196,7 @@ Prompt uses a separator line (like Claude Code):
 | `/budget <amount>` | Set session budget limit (warns 80%, blocks 100%) |
 | `/undo [path]` | Undo last edit / list undo history |
 | `/redo [path]` | Re-apply an undone edit / list redo history |
+| `/rewind [n]` | Revert all file changes from the last n turns (default 1) |
 | `/diff [args]` | Show git diff (supports --staged etc.) |
 | `/lint <cmd>` | Auto-lint after edits (`/lint off` to disable) |
 | `/pin <path>` | Pin file to always include in context |

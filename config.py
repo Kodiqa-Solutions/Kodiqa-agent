@@ -283,6 +283,9 @@ PERSONAS = {
 # ── Changelog ──
 # Canonical changelog is CHANGELOG.md — this list powers the /changelog command
 CHANGELOG = [
+    {"version": "v3.12.0", "date": "2026-06-06", "changes": [
+        "/rewind [n] — revert ALL file changes the AI made over the last n turns (default 1) in one step, with confirmation. Newly-created files are deleted; edited files restored. Works without git.",
+    ]},
     {"version": "v3.11.0", "date": "2026-06-06", "changes": [
         "Cross-provider failover (on by default): when a provider is down/rate-limited/erroring, the request auto-retries on the next configured provider and the turn continues there. Configure with /failover (on|off|auto|<model order>).",
     ]},
