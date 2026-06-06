@@ -147,17 +147,16 @@ class TestArchitectMode:
         assert hasattr(Kodiqa, '_handle_architect')
 
     def test_resolve_model_name_claude(self):
-        from kodiqa import Kodiqa
-        agent = MagicMock(spec=Kodiqa)
-        agent._resolve_model_name = Kodiqa._resolve_model_name.__get__(agent)
-        resolved = agent._resolve_model_name("opus")
+        # resolve_model_name now lives in ModelRegistry (model_registry.py)
+        from model_registry import ModelRegistry
+        reg = ModelRegistry(MagicMock())
+        resolved = reg.resolve_model_name("opus")
         assert "opus" in resolved.lower() or "claude" in resolved.lower()
 
     def test_resolve_model_name_passthrough(self):
-        from kodiqa import Kodiqa
-        agent = MagicMock(spec=Kodiqa)
-        agent._resolve_model_name = Kodiqa._resolve_model_name.__get__(agent)
-        assert agent._resolve_model_name("some-custom-model") == "some-custom-model"
+        from model_registry import ModelRegistry
+        reg = ModelRegistry(MagicMock())
+        assert reg.resolve_model_name("some-custom-model") == "some-custom-model"
 
     def test_architect_state_init(self):
         from kodiqa import Kodiqa

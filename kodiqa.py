@@ -28,7 +28,7 @@ import subprocess
 import time
 
 from config import (
-    OLLAMA_URL, OLLAMA_BIN, DEFAULT_MODEL, MODEL_ALIASES, CLAUDE_ALIASES,
+    OLLAMA_URL, DEFAULT_MODEL, MODEL_ALIASES, CLAUDE_ALIASES,
     CLAUDE_API_URL, CONTEXT_FILE, KODIQA_DIR,
     CONFIG_FILE, SYSTEM_PROMPT, SKIP_DIRS, SKIP_EXTENSIONS,
     MAX_FILE_SIZE, OPENAI_COMPAT_PROVIDERS,
@@ -38,6 +38,10 @@ from config import (
 )
 from memory import MemoryStore
 from session_store import SessionStore
+from context_builder import ContextBuilder
+from ollama_manager import OllamaManager
+from model_registry import ModelRegistry
+from agent_team import AgentTeam
 from actions import (
     parse_actions, execute_action, execute_tool_call, execute_tools_parallel, set_console,
     set_batch_mode, get_edit_queue, clear_edit_queue, apply_queued_edit, reject_queued_edit,
@@ -505,6 +509,10 @@ class Kodiqa:
         set_hooks(load_config().get("hooks", {}))
         self.memory = MemoryStore()
         self.sessions = SessionStore(self)  # conversation persistence (session_store.py)
+        self.context = ContextBuilder(self)  # prompt-context assembly (context_builder.py)
+        self.ollama = OllamaManager(self)  # ollama lifecycle + model library (ollama_manager.py)
+        self.models = ModelRegistry(self)  # model discovery + resolution (model_registry.py)
+        self.agent_team = AgentTeam(self)  # sub-agents + agent teams (agent_team.py)
         self.history = []
         self.cwd = os.getcwd()
         self.settings = load_settings()
@@ -727,40 +735,13 @@ class Kodiqa:
 
 
     def _discover_models(self):
-        """Auto-discover all installed Ollama models for multi-mode default."""
-        try:
-            resp = requests.get(f"{OLLAMA_URL}/api/tags", timeout=5)
-            resp.raise_for_status()
-            models = [m["name"] for m in resp.json().get("models", [])]
-            return models if models else []
-        except Exception:
-            return []
+        return self.ollama.discover_models()
 
     def _shell_env_context(self):
-        """Format shell environment for system prompt."""
-        if not self.shell_env:
-            return ""
-        parts = [f"- {k}: {v}" for k, v in self.shell_env.items() if k not in ("cwd",)]
-        if parts:
-            return "## Shell Environment\n" + "\n".join(parts)
-        return ""
+        return self.context.shell_env_context()
 
     def _build_pinned_context(self):
-        """Read all pinned files and format as context block."""
-        if not self._pinned_files:
-            return ""
-        parts = ["## Pinned Files"]
-        for path in self._pinned_files:
-            try:
-                with open(path, "r", errors="replace") as f:
-                    content = f.read()
-                if len(content) > 10000:
-                    content = content[:10000] + "\n... (truncated)"
-                rel = os.path.relpath(path, self.cwd) if path.startswith(self.cwd) else path
-                parts.append(f"### {rel}\n```\n{content}\n```")
-            except Exception:
-                pass
-        return "\n\n".join(parts) if len(parts) > 1 else ""
+        return self.context.build_pinned_context()
 
     def _send_notification(self, title, body):
         """Send desktop notification (macOS)."""
@@ -792,24 +773,7 @@ class Kodiqa:
             )
 
     def _detect_shell_env(self):
-        """Detect shell environment, OS, and dev tools."""
-        env = {
-            "os": os.uname().sysname,
-            "arch": os.uname().machine,
-            "shell": os.environ.get("SHELL", "unknown"),
-            "python": sys.version.split()[0],
-            "cwd": self.cwd,
-        }
-        # Detect common dev tools
-        for tool in ["git", "node", "npm", "cargo", "go", "java", "docker"]:
-            try:
-                result = subprocess.run([tool, "--version"], capture_output=True, text=True, timeout=5)
-                if result.returncode == 0:
-                    version = result.stdout.strip().split("\n")[0][:50]
-                    env[tool] = version
-            except (FileNotFoundError, subprocess.TimeoutExpired):
-                pass
-        return env
+        return self.context.detect_shell_env()
 
     # ── @file references, image paste, auto-detection ──
 
@@ -1082,65 +1046,10 @@ class Kodiqa:
         self.console.print()
 
     def _detect_git(self):
-        """Detect git repo info for current directory."""
-        import subprocess
-        try:
-            # Check if in a git repo
-            subprocess.run(["git", "rev-parse", "--git-dir"], capture_output=True, check=True, cwd=self.cwd)
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            self.git_info = None
-            return
-        info = {}
-        try:
-            r = subprocess.run(["git", "branch", "--show-current"], capture_output=True, text=True, cwd=self.cwd)
-            info["branch"] = r.stdout.strip() or "detached"
-        except Exception:
-            info["branch"] = "unknown"
-        try:
-            r = subprocess.run(["git", "log", "--oneline", "-5"], capture_output=True, text=True, cwd=self.cwd)
-            info["recent_commits"] = r.stdout.strip()
-        except Exception:
-            info["recent_commits"] = ""
-        try:
-            r = subprocess.run(["git", "status", "--short"], capture_output=True, text=True, cwd=self.cwd)
-            changes = r.stdout.strip()
-            info["changed_files"] = len(changes.splitlines()) if changes else 0
-            info["status_short"] = changes
-        except Exception:
-            info["changed_files"] = 0
-            info["status_short"] = ""
-        # Capture short diff stat for context
-        try:
-            r = subprocess.run(["git", "diff", "--stat", "--no-color"], capture_output=True, text=True, cwd=self.cwd, timeout=5)
-            info["diff_stat"] = r.stdout.strip()[:500] if r.stdout.strip() else ""
-        except Exception:
-            info["diff_stat"] = ""
-        # Capture staged diff stat
-        try:
-            r = subprocess.run(["git", "diff", "--staged", "--stat", "--no-color"], capture_output=True, text=True, cwd=self.cwd, timeout=5)
-            info["staged_stat"] = r.stdout.strip()[:500] if r.stdout.strip() else ""
-        except Exception:
-            info["staged_stat"] = ""
-        self.git_info = info
+        return self.context.detect_git()
 
     def _git_context(self):
-        """Format git info for system prompt."""
-        if not self.git_info:
-            return ""
-        g = self.git_info
-        lines = ["## Git Repository"]
-        lines.append(f"- Branch: {g['branch']}")
-        if g["changed_files"]:
-            lines.append(f"- Uncommitted changes: {g['changed_files']} files")
-            if g.get("status_short"):
-                lines.append(f"```\n{g['status_short']}\n```")
-        if g.get("diff_stat"):
-            lines.append(f"- Unstaged diff:\n```\n{g['diff_stat']}\n```")
-        if g.get("staged_stat"):
-            lines.append(f"- Staged diff:\n```\n{g['staged_stat']}\n```")
-        if g["recent_commits"]:
-            lines.append(f"- Recent commits:\n```\n{g['recent_commits']}\n```")
-        return "\n".join(lines)
+        return self.context.git_context()
 
     # ── Session save/load for conversation recovery ──
 
@@ -1159,29 +1068,10 @@ class Kodiqa:
         self.sessions.clear()
 
     def _get_project_context_path(self):
-        safe_name = self.cwd.strip("/").replace("/", "-")
-        return os.path.join(KODIQA_DIR, "projects", f"{safe_name}.md")
+        return self.context.get_project_context_path()
 
     def _load_context_file(self):
-        parts = []
-        if os.path.isfile(CONTEXT_FILE):
-            try:
-                with open(CONTEXT_FILE, "r") as f:
-                    content = f.read().strip()
-                if content:
-                    parts.append(f"## Global Context (from ~/.kodiqa/KODIQA.md)\n{content}")
-            except Exception:
-                pass
-        project_ctx = self._get_project_context_path()
-        if os.path.isfile(project_ctx):
-            try:
-                with open(project_ctx, "r") as f:
-                    content = f.read().strip()
-                if content:
-                    parts.append(f"## Project Context ({self.cwd})\n{content}")
-            except Exception:
-                pass
-        return "\n\n".join(parts)
+        return self.context.load_context_file()
 
     def _welcome(self):
         if is_claude_model(self.model) or self._is_live_claude(self.model):
@@ -1313,77 +1203,10 @@ class Kodiqa:
             pass  # Don't block quit on summary errors
 
     def _ensure_ollama(self):
-        """Make sure Ollama is running, start it if not."""
-        import subprocess
-        import time
-        try:
-            requests.get(f"{OLLAMA_URL}/api/tags", timeout=3)
-            return True  # Already running
-        except Exception:
-            pass
-        # Try to start Ollama
-        self.console.print("[dim]Starting Ollama...[/]")
-        try:
-            proc = subprocess.Popen(
-                [OLLAMA_BIN, "serve"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            # Wait for it to be ready (up to 10s)
-            for _ in range(20):
-                time.sleep(0.5)
-                try:
-                    requests.get(f"{OLLAMA_URL}/api/tags", timeout=2)
-                    self.console.print("[green]●[/] Ollama started")
-                    self._ollama_started_by_us = True
-                    self._ollama_proc = proc  # track OUR process for clean shutdown
-                    return True
-                except Exception:
-                    continue
-        except Exception:
-            pass
-        self.console.print("[yellow]●[/] Could not start Ollama [dim](start manually: ollama serve)[/]")
-        return False
+        return self.ollama.ensure_ollama()
 
     def _fetch_ollama_library(self, installed):
-        """Fetch available models from ollama.com/library, filter out already installed."""
-        import re
-        from bs4 import BeautifulSoup
-        try:
-            with Status("[dim]Fetching available models from ollama.com...[/]", console=self.console, spinner="dots"):
-                resp = requests.get("https://ollama.com/library", timeout=10)
-                resp.raise_for_status()
-            soup = BeautifulSoup(resp.text, "html.parser")
-        except Exception:
-            return []
-
-        models = []
-        for a in soup.find_all("a", href=True):
-            href = a["href"]
-            if not href.startswith("/library/"):
-                continue
-            name = href.replace("/library/", "")
-            if "/" in name or not name:
-                continue
-            # Skip embedding models — not useful for chat
-            text = a.get_text(" ", strip=True).lower()
-            if "embed" in name or "embedding" in text:
-                continue
-            # Description
-            p = a.find("p")
-            desc = p.get_text(strip=True) if p else ""
-            # Pull count
-            pulls_match = re.search(r"([\d.]+[KMB]?)\s*Pulls", a.get_text(" ", strip=True))
-            pulls = pulls_match.group(1) if pulls_match else ""
-            # Skip if already installed
-            already_have = any(
-                inst.startswith(name.split(":")[0]) for inst in installed.keys()
-            )
-            if not already_have:
-                models.append((name, desc, pulls))
-
-        # Return top 100 by popularity (page is already sorted by pulls)
-        return models[:100]
+        return self.ollama.fetch_ollama_library(installed)
 
     def _cleanup_children(self):
         """Stop spawned child processes (MCP, LSP, Ollama). Safe to call repeatedly;
@@ -1404,174 +1227,10 @@ class Kodiqa:
             pass
 
     def _stop_ollama(self):
-        """Stop only the Ollama process WE started (don't pkill unrelated ones)."""
-        if not self._ollama_started_by_us:
-            return
-        proc = getattr(self, "_ollama_proc", None)
-        try:
-            if proc and proc.poll() is None:
-                proc.terminate()
-                try:
-                    proc.wait(timeout=5)
-                except Exception:
-                    proc.kill()
-                    try:
-                        proc.wait(timeout=5)
-                    except Exception:
-                        pass
-                self.console.print("[green]●[/] Ollama stopped")
-            self._ollama_started_by_us = False
-            self._ollama_proc = None
-        except Exception:
-            pass
+        return self.ollama.stop_ollama()
 
     def _check_updates(self, show_welcome=True):
-        """Check for model updates and new models on startup.
-
-        Opt-out via --no-update / config check_updates=false, and throttled to run
-        at most once per update_check_interval_hours (default 24) so the per-model
-        `ollama pull` sweep + ollama.com scrape don't block every launch.
-        Called with show_welcome=False from /update (mid-session, banner already shown).
-        """
-        import subprocess
-
-        if getattr(self, "_skip_updates", False) or not self.config.get("check_updates", True):
-            return
-        interval_h = self.config.get("update_check_interval_hours", 24)
-        last = self.settings.get("last_update_check", 0)
-        if interval_h > 0 and (time.time() - last) < interval_h * 3600:
-            return
-
-        if not self._ensure_ollama():
-            return
-        # Record now so a skipped/failed check still throttles the next launch.
-        self.settings["last_update_check"] = time.time()
-        try:
-            save_settings(self.settings)
-        except Exception:
-            pass
-
-        try:
-            # Get installed models
-            resp = requests.get(f"{OLLAMA_URL}/api/tags", timeout=5)
-            resp.raise_for_status()
-            installed = {m["name"]: m for m in resp.json().get("models", [])}
-        except Exception:
-            return
-
-        # 1. Check installed models for updates
-        if not installed:
-            self.console.print("\n[yellow]No local models installed.[/]")
-        else:
-            self.console.print(f"\n[dim]Checking {len(installed)} installed models for updates...[/]")
-            updated_count = 0
-            for model_name in list(installed.keys()):
-                try:
-                    # Record the model's digest before pulling so we can tell whether
-                    # anything actually changed ("ollama pull" prints "success" either way).
-                    old_digest = installed[model_name].get("digest")
-                    with Status(f"  [dim]Checking {model_name}...[/]", console=self.console, spinner="dots"):
-                        result = subprocess.run(
-                            [OLLAMA_BIN, "pull", model_name],
-                            capture_output=True, text=True, timeout=120,
-                        )
-                    if result.returncode != 0:
-                        self.console.print(f"  [yellow]●[/] {model_name} [dim]check failed[/]")
-                        continue
-                    # Compare digest after the pull to detect a real update.
-                    new_digest = old_digest
-                    try:
-                        tags = requests.get(f"{OLLAMA_URL}/api/tags", timeout=5).json().get("models", [])
-                        for m in tags:
-                            if m["name"] == model_name:
-                                new_digest = m.get("digest")
-                                break
-                    except Exception:
-                        pass
-                    if old_digest and new_digest and new_digest != old_digest:
-                        self.console.print(f"  [green]●[/] {model_name} [bold green]updated![/]")
-                        updated_count += 1
-                    else:
-                        self.console.print(f"  [green]●[/] {model_name} [dim]up to date[/]")
-                except subprocess.TimeoutExpired:
-                    self.console.print(f"  [yellow]●[/] {model_name} [dim]timeout[/]")
-                except Exception:
-                    continue
-
-            if updated_count > 0:
-                self.console.print(f"\n[green]{updated_count} model(s) updated![/]")
-
-        # Show welcome before new models list (skipped when invoked mid-session via /update)
-        if show_welcome:
-            self._welcome()
-            self._welcome_shown = True
-
-        # 2. Fetch available models from Ollama library
-        new_models = self._fetch_ollama_library(installed)
-        if not new_models:
-            return
-
-        # Show new models available
-        self.console.print(f"\n[bold yellow]Top {len(new_models)} new models available[/] [dim](most popular on ollama.com/library)[/]:")
-        for i, (model, desc, pulls) in enumerate(new_models, 1):
-            pulls_str = f" [dim]({pulls} pulls)[/]" if pulls else ""
-            self.console.print(f"  [cyan bold]{i}.[/] [cyan]{model}[/] — {desc[:70]}{pulls_str}")
-
-        try:
-            answer = Prompt.ask(
-                "\n[bold]Pull new models?[/] [dim](enter numbers, 'all', or 'skip')[/]",
-                default="skip"
-            )
-        except (EOFError, KeyboardInterrupt):
-            return
-
-        if answer.strip().lower() == "skip":
-            return
-
-        to_pull = []
-        if answer.strip().lower() == "all":
-            to_pull = [m for m, _, _ in new_models]
-        else:
-            # Parse numbers or model names
-            parts = answer.replace(",", " ").split()
-            for part in parts:
-                try:
-                    idx = int(part) - 1
-                    if 0 <= idx < len(new_models):
-                        to_pull.append(new_models[idx][0])
-                except ValueError:
-                    # Maybe they typed a model name (require 3+ chars to avoid accidental matches)
-                    if len(part) >= 3:
-                        for model, _, _ in new_models:
-                            if part.lower() in model.lower():
-                                to_pull.append(model)
-                                break
-
-        if not to_pull:
-            return
-
-        for model in to_pull:
-            self.console.print(f"\n  [yellow]●[/] Pulling [cyan]{model}[/]...")
-            try:
-                import subprocess
-                result = subprocess.run(
-                    [OLLAMA_BIN, "pull", model],
-                    capture_output=True, text=True, timeout=600,
-                )
-                if result.returncode == 0:
-                    self.console.print(f"  [green]●[/] [cyan]{model}[/] installed!")
-                else:
-                    self.console.print(f"  [red]●[/] Failed to pull {model}: {result.stderr[:100]}")
-            except subprocess.TimeoutExpired:
-                self.console.print(f"  [red]●[/] Timeout pulling {model}")
-            except Exception as e:
-                self.console.print(f"  [red]●[/] Error: {e}")
-
-        self.console.print(f"\n[green]Models pulled! Use /multi all for multi-model mode.[/]")
-        # Auto-set model if current one wasn't installed
-        if not installed and to_pull:
-            self.model = to_pull[0]
-            self.console.print(f"Model set to [cyan]{self.model}[/]")
+        return self.ollama.check_updates(show_welcome)
 
     def _handle_slash(self, cmd):
         parts = cmd.split(None, 1)
@@ -2584,266 +2243,25 @@ class Kodiqa:
         self.console.print(f"[dim]Endpoint: {url}[/]")
 
     def _invalidate_model_cache(self):
-        """Force the next _fetch_api_models() to re-fetch (e.g. after a key/region change)."""
-        if hasattr(self, "_cached_api_models"):
-            self._cached_api_models["_ts"] = 0
+        return self.models.invalidate_model_cache()
 
     def _fetch_api_models(self):
-        """Fetch live model lists from Claude and all OpenAI-compat APIs. Caches results."""
-        if not hasattr(self, "_cached_api_models"):
-            self._cached_api_models = {"claude": [], "_ts": 0}
-            for prov_name in OPENAI_COMPAT_PROVIDERS:
-                self._cached_api_models[prov_name] = []
-        import time
-        # Cache for 10 minutes
-        if time.time() - self._cached_api_models.get("_ts", 0) < 600:
-            return self._cached_api_models
-        # Fetch Claude models
-        claude_models = []
-        if self.claude_key:
-            try:
-                resp = requests.get(
-                    "https://api.anthropic.com/v1/models",
-                    headers={"x-api-key": self.claude_key, "anthropic-version": "2023-06-01"},
-                    timeout=10,
-                )
-                if resp.status_code == 200:
-                    data = resp.json().get("data", [])
-                    for m in data:
-                        mid = m.get("id", "")
-                        if mid.startswith("claude-") and "embed" not in mid:
-                            claude_models.append(mid)
-                    claude_models.sort()
-            except Exception:
-                pass
-        # Fetch all OpenAI-compatible provider models
-        result = {"claude": claude_models, "_ts": time.time()}
-        for prov_name, prov in OPENAI_COMPAT_PROVIDERS.items():
-            key = self.api_keys.get(prov_name, "")
-            if not key:
-                result[prov_name] = []
-                continue
-            models = []
-            try:
-                resp = requests.get(
-                    prov.get("models_url", prov["url"].replace("/chat/completions", "/models")),
-                    headers={"Authorization": f"Bearer {key}"},
-                    timeout=10,
-                )
-                if resp.status_code == 200:
-                    data = resp.json().get("data", [])
-                    for m in data:
-                        mid = m.get("id", "")
-                        if mid:
-                            models.append(mid)
-                    models.sort()
-            except Exception:
-                pass
-            result[prov_name] = models
-        self._cached_api_models = result
-        return self._cached_api_models
+        return self.models.fetch_api_models()
 
     def _get_api_model_choices(self):
-        """Get models from APIs that aren't already in aliases."""
-        live = self._fetch_api_models()
-        extras = {}
-        extras["claude"] = [m for m in live.get("claude", []) if m not in CLAUDE_ALIASES.values()]
-        for prov_name, prov in OPENAI_COMPAT_PROVIDERS.items():
-            extras[prov_name] = [m for m in live.get(prov_name, []) if m not in prov["aliases"].values()]
-        return extras
+        return self.models.get_api_model_choices()
 
     def _list_models(self):
-        choices = []  # list of (model_name, provider)
-        n = 0
-        lines = []
-        if self.claude_key:
-            lines.append("[bold yellow]Claude API:[/]")
-            for alias, model in CLAUDE_ALIASES.items():
-                n += 1
-                choices.append((model, "claude"))
-                marker = " [cyan]◀[/]" if model == self.model else ""
-                lines.append(f"  [dim]{n:>3}.[/] [cyan]{model}[/] [dim](/{alias})[/]{marker}")
-            extras = self._get_api_model_choices()
-            extra_claude = extras.get("claude", [])
-            if extra_claude:
-                lines.append("  [dim]── additional (from API) ──[/]")
-                for m in extra_claude:
-                    n += 1
-                    choices.append((m, "claude"))
-                    marker = " [cyan]◀[/]" if m == self.model else ""
-                    lines.append(f"  [dim]{n:>3}.[/] [cyan]{m}[/]{marker}")
-            lines.append("")
-        # All OpenAI-compatible providers
-        extras = self._get_api_model_choices()
-        for prov_name, prov in OPENAI_COMPAT_PROVIDERS.items():
-            key = self.api_keys.get(prov_name, "")
-            if not key:
-                continue
-            lines.append(f"[bold {prov['color']}]{prov['label']} API:[/]")
-            for alias, model in prov["aliases"].items():
-                n += 1
-                choices.append((model, prov_name))
-                marker = " [cyan]◀[/]" if model == self.model else ""
-                lines.append(f"  [dim]{n:>3}.[/] [cyan]{model}[/] [dim](/{alias})[/]{marker}")
-            extra = extras.get(prov_name, [])
-            if extra:
-                lines.append("  [dim]── additional (from API) ──[/]")
-                for m in extra:
-                    n += 1
-                    choices.append((m, prov_name))
-                    marker = " [cyan]◀[/]" if m == self.model else ""
-                    lines.append(f"  [dim]{n:>3}.[/] [cyan]{m}[/]{marker}")
-            lines.append("")
-        lines.append("[bold green]Local Ollama:[/]")
-        try:
-            resp = requests.get(f"{OLLAMA_URL}/api/tags", timeout=5)
-            resp.raise_for_status()
-            models = resp.json().get("models", [])
-            if not models:
-                lines.append("  [dim]No models found. Is Ollama running?[/]")
-            else:
-                for m in models:
-                    name = m["name"]
-                    n += 1
-                    choices.append((name, "local"))
-                    size = m.get("size", 0)
-                    size_str = f"{size / 1e9:.1f}GB" if size > 1e9 else f"{size / 1e6:.0f}MB"
-                    marker = " [cyan]◀[/]" if name == self.model else ""
-                    lines.append(f"  [dim]{n:>3}.[/] [cyan]{name}[/] [dim]({size_str})[/]{marker}")
-        except Exception:
-            lines.append("  [dim]Can't reach Ollama (not running?)[/]")
-        self.console.print(Panel("\n".join(lines), title="Available Models", border_style="blue"))
-        # Let user pick by number
-        if choices:
-            try:
-                pick = Prompt.ask("[bold]Pick a model[/] (number or 'skip')")
-            except (EOFError, KeyboardInterrupt):
-                return
-            pick = pick.strip()
-            if pick.lower() in ("skip", ""):
-                return
-            if pick.isdigit() and 1 <= int(pick) <= len(choices):
-                new_model, prov_name = choices[int(pick) - 1]
-                self.model = new_model
-                self.multi_models = []
-                if prov_name == "claude":
-                    self._stop_ollama()
-                    provider_str = "[yellow]Claude API[/]"
-                elif prov_name == "local":
-                    provider_str = "[green]Local[/]"
-                    self._ensure_ollama()
-                else:
-                    self._stop_ollama()
-                    prov = OPENAI_COMPAT_PROVIDERS[prov_name]
-                    provider_str = f"[{prov['color']}]{prov['label']} API[/]"
-                self.console.print(f"Switched to [cyan]{self.model}[/] ({provider_str})")
-            else:
-                self.console.print(f"[dim]Invalid choice.[/]")
+        return self.models.list_models()
 
     def _installed_ollama_models(self):
-        """Return [(name, size_str), ...] for locally installed Ollama models."""
-        try:
-            resp = requests.get(f"{OLLAMA_URL}/api/tags", timeout=5)
-            resp.raise_for_status()
-            out = []
-            for m in resp.json().get("models", []):
-                size = m.get("size", 0)
-                size_str = f"{size / 1e9:.1f}GB" if size > 1e9 else f"{size / 1e6:.0f}MB"
-                out.append((m["name"], size_str))
-            return out
-        except Exception:
-            return None
+        return self.ollama.installed_ollama_models()
 
     def _delete_model(self, arg):
-        """Delete one or more locally downloaded Ollama models (frees disk)."""
-        import subprocess
-        models = self._installed_ollama_models()
-        if models is None:
-            self.console.print("[red]Can't reach Ollama (not running?)[/]")
-            return
-        if not models:
-            self.console.print("[yellow]No local models installed.[/]")
-            return
-
-        # Resolve targets: explicit arg(s), or interactive pick.
-        targets = []
-        if arg:
-            wanted = arg.replace(",", " ").split()
-            for w in wanted:
-                match = next((n for n, _ in models if n == w), None) \
-                    or next((n for n, _ in models if w.lower() in n.lower()), None)
-                if match:
-                    targets.append(match)
-                else:
-                    self.console.print(f"[yellow]No installed model matches '{w}'.[/]")
-        else:
-            self.console.print("[bold]Local models:[/]")
-            for i, (name, size_str) in enumerate(models, 1):
-                marker = " [cyan]◀ (current)[/]" if name == self.model else ""
-                self.console.print(f"  [cyan bold]{i}.[/] [cyan]{name}[/] [dim]({size_str})[/]{marker}")
-            try:
-                answer = Prompt.ask("\n[bold red]Delete which?[/] [dim](numbers, 'all', or 'cancel')[/]", default="cancel")
-            except (EOFError, KeyboardInterrupt):
-                return
-            answer = answer.strip().lower()
-            if answer in ("cancel", "skip", ""):
-                return
-            if answer == "all":
-                targets = [n for n, _ in models]
-            else:
-                for part in answer.replace(",", " ").split():
-                    if part.isdigit() and 1 <= int(part) <= len(models):
-                        targets.append(models[int(part) - 1][0])
-
-        targets = list(dict.fromkeys(targets))  # dedupe, keep order
-        if not targets:
-            return
-
-        # Confirm — deletion is destructive and irreversible (must re-download).
-        self.console.print(f"\n[yellow]Will delete:[/] {', '.join(targets)}")
-        try:
-            confirm = Prompt.ask("[bold red]Confirm delete?[/]", choices=["y", "n"], default="n")
-        except (EOFError, KeyboardInterrupt):
-            return
-        if confirm != "y":
-            self.console.print("[dim]Cancelled.[/]")
-            return
-
-        for name in targets:
-            try:
-                with Status(f"  [dim]Deleting {name}...[/]", console=self.console, spinner="dots"):
-                    result = subprocess.run([OLLAMA_BIN, "rm", name], capture_output=True, text=True, timeout=30)
-                if result.returncode == 0:
-                    self.console.print(f"  [green]●[/] Deleted [cyan]{name}[/]")
-                    self._invalidate_model_cache()
-                    if name == self.model:
-                        self.console.print(f"  [yellow]Note: {name} was the active model. Use /model to switch.[/]")
-                else:
-                    self.console.print(f"  [red]●[/] Failed to delete {name}: {(result.stderr or '').strip()[:100]}")
-            except subprocess.TimeoutExpired:
-                self.console.print(f"  [red]●[/] Timeout deleting {name}")
-            except Exception as e:
-                self.console.print(f"  [red]●[/] Error: {e}")
+        return self.ollama.delete_model(arg)
 
     def _pull_model(self, arg):
-        """Pull (download) an Ollama model by name on demand."""
-        import subprocess
-        if not arg:
-            self.console.print("[yellow]Usage: /pull <model>[/] [dim](e.g. /pull llama3.2)[/]")
-            return
-        for name in arg.replace(",", " ").split():
-            self.console.print(f"\n  [yellow]●[/] Pulling [cyan]{name}[/]...")
-            try:
-                result = subprocess.run([OLLAMA_BIN, "pull", name], capture_output=True, text=True, timeout=600)
-                if result.returncode == 0:
-                    self.console.print(f"  [green]●[/] [cyan]{name}[/] installed!")
-                    self._invalidate_model_cache()
-                else:
-                    self.console.print(f"  [red]●[/] Failed to pull {name}: {(result.stderr or '').strip()[:120]}")
-            except subprocess.TimeoutExpired:
-                self.console.print(f"  [red]●[/] Timeout pulling {name}")
-            except Exception as e:
-                self.console.print(f"  [red]●[/] Error: {e}")
+        return self.ollama.pull_model(arg)
 
     def _scan_project(self, path):
         if not os.path.isdir(path):
@@ -3148,9 +2566,7 @@ class Kodiqa:
         return "Try /model to switch providers."
 
     def _is_live_claude(self, model_name):
-        """Check if model is in cached live Claude model list."""
-        cached = getattr(self, "_cached_api_models", None)
-        return cached is not None and model_name in cached.get("claude", [])
+        return self.models.is_live_claude(model_name)
 
     def _review_edit_queue(self):
         """Show batch edit review panel — cycle through queued edits, accept/reject each."""
@@ -3337,19 +2753,7 @@ class Kodiqa:
         self.console.print(f"  Implementer: [bold]{self._impl_model}[/]")
 
     def _resolve_model_name(self, name):
-        """Resolve a model alias to full model name."""
-        from config import CLAUDE_ALIASES, MODEL_ALIASES, OPENAI_COMPAT_PROVIDERS, QWEN_EXTRA_ALIASES
-        if name in CLAUDE_ALIASES:
-            return CLAUDE_ALIASES[name]
-        if name in MODEL_ALIASES:
-            return MODEL_ALIASES[name]
-        for prov_data in OPENAI_COMPAT_PROVIDERS.values():
-            aliases = prov_data.get("aliases", {})
-            if name in aliases:
-                return aliases[name]
-        if name in QWEN_EXTRA_ALIASES:
-            return QWEN_EXTRA_ALIASES[name]
-        return name
+        return self.models.resolve_model_name(name)
 
     # ── Multi-model chat ──
 
@@ -3515,25 +2919,7 @@ class Kodiqa:
     # ── Shared chat-loop machinery (used by all providers) ──
 
     def _build_system_prompt(self, template):
-        """Assemble the full system prompt: base template + persona + context +
-        git + shell env + pinned files. Shared by every provider's chat loop."""
-        memories_ctx = self.memory.get_context()
-        context_file_ctx = self._load_context_file()
-        system_prompt = template.format(cwd=self.cwd, model=self.model, memories=memories_ctx)
-        if self._persona and self._persona in PERSONAS:
-            system_prompt = PERSONAS[self._persona]["prompt"] + "\n\n" + system_prompt
-        if context_file_ctx:
-            system_prompt += "\n\n" + context_file_ctx
-        git_ctx = self._git_context()
-        if git_ctx:
-            system_prompt += "\n\n" + git_ctx
-        env_ctx = self._shell_env_context()
-        if env_ctx:
-            system_prompt += "\n\n" + env_ctx
-        pinned_ctx = self._build_pinned_context()
-        if pinned_ctx:
-            system_prompt += "\n\n" + pinned_ctx
-        return system_prompt
+        return self.context.build_system_prompt(template)
 
     def _maybe_lint_fix(self, lint_errors):
         """If auto lint-fix is on and there are errors, queue a fix request and
@@ -4111,15 +3497,7 @@ class Kodiqa:
         return tools
 
     def _get_provider_for_model(self, model_name):
-        """Return provider name for a model, checking aliases + live cache."""
-        prov = get_openai_provider(model_name)
-        if prov:
-            return prov
-        cached = getattr(self, "_cached_api_models", {})
-        for prov_name in OPENAI_COMPAT_PROVIDERS:
-            if model_name in cached.get(prov_name, []):
-                return prov_name
-        return None
+        return self.models.get_provider_for_model(model_name)
 
     def _chat_openai_compat(self, user_msg, provider):
         """OpenAI-compatible chat (OpenAI, DeepSeek, Groq, Mistral, Qwen) — shared loop."""
@@ -5020,19 +4398,7 @@ class Kodiqa:
     # ── Phase 4: Sub-agents, LSP, Voice, Image Gen ──
 
     def _create_agent_worktree(self, agent_id):
-        """Create a git worktree for isolated agent work."""
-        worktree_dir = os.path.join(self.cwd, ".kodiqa_worktrees", agent_id)
-        branch = f"kodiqa-{agent_id}"
-        try:
-            os.makedirs(os.path.dirname(worktree_dir), exist_ok=True)
-            subprocess.run(
-                ["git", "worktree", "add", "-b", branch, worktree_dir],
-                capture_output=True, text=True, timeout=10, cwd=self.cwd, check=True,
-            )
-            return worktree_dir
-        except Exception as e:
-            self.console.print(f"  [red]Worktree creation failed: {e}[/]")
-            return None
+        return self.agent_team.create_agent_worktree(agent_id)
 
     def _cleanup_agent_worktree(self, agent_id):
         """Remove the git worktree for an agent."""
@@ -5047,243 +4413,16 @@ class Kodiqa:
             pass
 
     def _handle_agent(self, arg):
-        """Spawn a sub-agent to handle a task."""
-        if not arg:
-            self.console.print("[dim]Usage: /agent <task description>[/]")
-            self.console.print("[dim]  /agent --worktree <task> — run in isolated git worktree[/]")
-            return
-        use_worktree = False
-        if arg.strip().startswith("--worktree"):
-            use_worktree = True
-            arg = arg.replace("--worktree", "", 1).strip()
-        if not arg:
-            self.console.print("[dim]Provide a task after --worktree[/]")
-            return
-        active = sum(1 for a in self._agents.values() if a.get("status") == "running")
-        if active >= 3:
-            self.console.print("[red]Max 3 concurrent agents. Wait for one to finish.[/]")
-            return
-        self._agent_counter += 1
-        agent_id = f"agent_{self._agent_counter}"
-        worktree_dir = None
-        if use_worktree:
-            worktree_dir = self._create_agent_worktree(agent_id)
-            if not worktree_dir:
-                self.console.print("[yellow]Falling back to shared workspace.[/]")
-        self._agents[agent_id] = {
-            "task": arg, "status": "running", "result": None,
-            "worktree": worktree_dir,
-        }
-        wt_label = f" [dim](worktree)[/]" if worktree_dir else ""
-        self.console.print(f"[green]●[/] Spawned {agent_id}: {arg[:60]}{wt_label}")
-
-        def worker():
-            try:
-                wt_ctx = f"\nWorking directory: {worktree_dir}" if worktree_dir else ""
-                task_prompt = f"Complete this task concisely:{wt_ctx}\n{arg}"
-                # Use compact non-streaming query
-                if is_claude_model(self.model) or self._is_live_claude(self.model):
-                    result = self._claude_nostream(
-                        task_prompt,
-                        [{"role": "user", "content": arg}]
-                    )
-                else:
-                    provider = self._get_provider_for_model(self.model)
-                    if provider:
-                        result = self._openai_compat_nostream(
-                            task_prompt,
-                            [{"role": "user", "content": arg}],
-                            provider,
-                        )
-                    else:
-                        resp = requests.post(
-                            f"{OLLAMA_URL}/api/chat",
-                            json={"model": self.model, "messages": [
-                                {"role": "system", "content": task_prompt},
-                                {"role": "user", "content": arg},
-                            ], "stream": False},
-                            timeout=120,
-                        )
-                        result = resp.json().get("message", {}).get("content", "No response")
-                self._agents[agent_id]["result"] = result
-                self._agents[agent_id]["status"] = "done"
-            except Exception as e:
-                self._agents[agent_id]["result"] = f"Error: {e}"
-                self._agents[agent_id]["status"] = "error"
-            finally:
-                if worktree_dir:
-                    # Show diff from worktree
-                    try:
-                        diff = subprocess.run(
-                            ["git", "diff", "HEAD"],
-                            capture_output=True, text=True, timeout=10, cwd=worktree_dir,
-                        )
-                        if diff.stdout.strip():
-                            self._agents[agent_id]["worktree_diff"] = diff.stdout[:5000]
-                    except Exception:
-                        pass
-
-        t = threading.Thread(target=worker, daemon=True)
-        t.start()
+        return self.agent_team.handle_agent(arg)
 
     def _handle_agents(self):
-        """List running and completed agents."""
-        if not self._agents:
-            self.console.print("[dim]No agents. Use /agent <task> to spawn one.[/]")
-            return
-        for aid, info in self._agents.items():
-            status = info["status"]
-            color = {"running": "yellow", "done": "green", "error": "red"}.get(status, "dim")
-            wt = " [dim](worktree)[/]" if info.get("worktree") else ""
-            self.console.print(f"  [{color}]●[/] {aid} [{color}]{status}[/]{wt} — {info['task'][:50]}")
-            if status in ("done", "error") and info.get("result"):
-                result = info["result"]
-                if len(result) > 500:
-                    result = result[:500] + "..."
-                self.console.print(Panel(result, title=aid, border_style=color))
-            if info.get("worktree_diff"):
-                self.console.print(f"  [dim]Worktree has changes. Use 'git merge kodiqa-{aid}' to merge.[/]")
-        # Offer to inject completed results
-        done = [(aid, info) for aid, info in self._agents.items() if info["status"] == "done" and info.get("result")]
-        if done:
-            self.console.print(f"\n[dim]{len(done)} completed. Results shown above.[/]")
+        return self.agent_team.handle_agents()
 
     def _handle_team(self, arg):
-        """Spawn a team: coordinator breaks task into subtasks, workers execute in parallel."""
-        if not arg:
-            self.console.print("[dim]Usage: /team <task description>[/]")
-            self.console.print("[dim]  Coordinator splits task → workers execute → results merged[/]")
-            return
-        self._team_counter += 1
-        team_id = f"team_{self._team_counter}"
-        self._teams[team_id] = {
-            "task": arg, "status": "planning", "subtasks": [], "final_result": None,
-        }
-        self.console.print(f"[green]●[/] Team {team_id}: {arg[:60]}")
-        self.console.print(f"  [cyan]Coordinator planning...[/]")
-
-        def team_worker():
-            try:
-                # Phase 1: Coordinator breaks task into subtasks
-                plan_prompt = (
-                    f"Break this task into 2-4 independent subtasks that can be done in parallel. "
-                    f"Return ONLY a JSON array of subtask description strings, nothing else.\n\n"
-                    f"Task: {arg}"
-                )
-                if is_claude_model(self.model) or self._is_live_claude(self.model):
-                    plan_result = self._claude_nostream(plan_prompt, [{"role": "user", "content": plan_prompt}])
-                else:
-                    provider = self._get_provider_for_model(self.model)
-                    if provider:
-                        plan_result = self._openai_compat_nostream(plan_prompt, [{"role": "user", "content": plan_prompt}], provider)
-                    else:
-                        resp = requests.post(f"{OLLAMA_URL}/api/chat", json={
-                            "model": self.model, "messages": [{"role": "user", "content": plan_prompt}], "stream": False,
-                        }, timeout=120)
-                        plan_result = resp.json().get("message", {}).get("content", "[]")
-
-                # Parse JSON subtasks from response
-                import json as _json
-                subtasks = []
-                try:
-                    # Find JSON array in response
-                    match = re.search(r'\[.*\]', plan_result, re.DOTALL)
-                    if match:
-                        subtasks = _json.loads(match.group())
-                except Exception:
-                    subtasks = [arg]  # Fallback: single task
-
-                if not subtasks:
-                    subtasks = [arg]
-                subtasks = subtasks[:4]  # Cap at 4
-
-                self._teams[team_id]["status"] = "running"
-                self._teams[team_id]["subtasks"] = [
-                    {"task": st, "status": "pending", "result": None} for st in subtasks
-                ]
-                self.console.print(f"  [cyan]Team {team_id}: {len(subtasks)} subtasks planned[/]")
-                for i, st in enumerate(subtasks):
-                    self.console.print(f"    {i+1}. {st[:60]}")
-
-                # Phase 2: Execute subtasks in parallel via threads
-                import concurrent.futures
-                def run_subtask(idx, task_desc):
-                    self._teams[team_id]["subtasks"][idx]["status"] = "running"
-                    try:
-                        if is_claude_model(self.model) or self._is_live_claude(self.model):
-                            r = self._claude_nostream(task_desc, [{"role": "user", "content": task_desc}])
-                        else:
-                            provider = self._get_provider_for_model(self.model)
-                            if provider:
-                                r = self._openai_compat_nostream(task_desc, [{"role": "user", "content": task_desc}], provider)
-                            else:
-                                resp = requests.post(f"{OLLAMA_URL}/api/chat", json={
-                                    "model": self.model, "messages": [{"role": "user", "content": task_desc}], "stream": False,
-                                }, timeout=120)
-                                r = resp.json().get("message", {}).get("content", "No result")
-                        self._teams[team_id]["subtasks"][idx]["result"] = r
-                        self._teams[team_id]["subtasks"][idx]["status"] = "done"
-                        return r
-                    except Exception as e:
-                        self._teams[team_id]["subtasks"][idx]["result"] = f"Error: {e}"
-                        self._teams[team_id]["subtasks"][idx]["status"] = "error"
-                        return f"Error: {e}"
-
-                with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(subtasks), 3)) as executor:
-                    futures = {executor.submit(run_subtask, i, st): i for i, st in enumerate(subtasks)}
-                    concurrent.futures.wait(futures)
-
-                # Phase 3: Merge results
-                self._teams[team_id]["status"] = "merging"
-                results_text = "\n\n".join(
-                    f"Subtask {i+1}: {st['task'][:80]}\nResult: {(st['result'] or 'No result')[:2000]}"
-                    for i, st in enumerate(self._teams[team_id]["subtasks"])
-                )
-                merge_prompt = (
-                    f"Merge these subtask results into a single coherent response.\n\n"
-                    f"Original task: {arg}\n\n{results_text}"
-                )
-                if is_claude_model(self.model) or self._is_live_claude(self.model):
-                    final = self._claude_nostream(merge_prompt, [{"role": "user", "content": merge_prompt}])
-                else:
-                    provider = self._get_provider_for_model(self.model)
-                    if provider:
-                        final = self._openai_compat_nostream(merge_prompt, [{"role": "user", "content": merge_prompt}], provider)
-                    else:
-                        resp = requests.post(f"{OLLAMA_URL}/api/chat", json={
-                            "model": self.model, "messages": [{"role": "user", "content": merge_prompt}], "stream": False,
-                        }, timeout=120)
-                        final = resp.json().get("message", {}).get("content", "No result")
-
-                self._teams[team_id]["final_result"] = final
-                self._teams[team_id]["status"] = "done"
-                self.console.print(f"\n  [green]●[/] Team {team_id} complete!")
-
-            except Exception as e:
-                self._teams[team_id]["status"] = "error"
-                self._teams[team_id]["final_result"] = f"Error: {e}"
-                self.console.print(f"\n  [red]●[/] Team {team_id} error: {e}")
-
-        t = threading.Thread(target=team_worker, daemon=True)
-        t.start()
+        return self.agent_team.handle_team(arg)
 
     def _handle_teams(self):
-        """List all teams and their subtask status."""
-        if not self._teams:
-            self.console.print("[dim]No teams. Use /team <task> to spawn one.[/]")
-            return
-        for tid, info in self._teams.items():
-            status = info["status"]
-            color = {"planning": "cyan", "running": "yellow", "merging": "cyan", "done": "green", "error": "red"}.get(status, "dim")
-            self.console.print(f"  [{color}]●[/] {tid} [{color}]{status}[/] — {info['task'][:50]}")
-            for i, st in enumerate(info.get("subtasks", [])):
-                sc = {"pending": "dim", "running": "yellow", "done": "green", "error": "red"}.get(st["status"], "dim")
-                self.console.print(f"    [{sc}]●[/] Subtask {i+1}: {st['task'][:50]} [{sc}]{st['status']}[/]")
-            if info.get("final_result"):
-                result = info["final_result"]
-                if len(result) > 500:
-                    result = result[:500] + "..."
-                self.console.print(Panel(result, title=f"{tid} result", border_style=color))
+        return self.agent_team.handle_teams()
 
     def _handle_lsp(self, arg):
         """Handle /lsp command for Language Server Protocol."""

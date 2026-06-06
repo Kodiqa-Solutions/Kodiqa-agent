@@ -28,33 +28,34 @@ class TestThemes:
 # ── Pinned Context ──
 
 class TestPinnedContext:
+    """build_pinned_context now lives in ContextBuilder (context_builder.py)."""
+
+    def _builder(self, agent):
+        from context_builder import ContextBuilder
+        return ContextBuilder(agent)
+
     def test_build_pinned_empty(self):
         """No pinned files returns empty string."""
-        from kodiqa import Kodiqa
-        k = MagicMock(spec=Kodiqa)
-        k._pinned_files = []
-        result = Kodiqa._build_pinned_context(k)
-        assert result == ""
+        agent = MagicMock()
+        agent._pinned_files = []
+        assert self._builder(agent).build_pinned_context() == ""
 
     def test_build_pinned_with_file(self, tmp_path):
         """Pinned file content is included."""
-        from kodiqa import Kodiqa
         f = tmp_path / "test.py"
         f.write_text("print('hello')")
-        k = MagicMock()
-        k._pinned_files = [str(f)]
-        k.cwd = str(tmp_path)
-        result = Kodiqa._build_pinned_context(k)
+        agent = MagicMock()
+        agent._pinned_files = [str(f)]
+        agent.cwd = str(tmp_path)
+        result = self._builder(agent).build_pinned_context()
         assert "print('hello')" in result
         assert "test.py" in result
 
     def test_build_pinned_missing_file(self):
         """Missing pinned file is skipped."""
-        from kodiqa import Kodiqa
-        k = MagicMock(spec=Kodiqa)
-        k._pinned_files = ["/nonexistent/file.py"]
-        result = Kodiqa._build_pinned_context(k)
-        assert result == ""
+        agent = MagicMock()
+        agent._pinned_files = ["/nonexistent/file.py"]
+        assert self._builder(agent).build_pinned_context() == ""
 
 
 # ── Cost Optimizer ──

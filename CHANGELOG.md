@@ -4,6 +4,22 @@ All notable changes to Kodiqa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.7.3] - 2026-06-06
+
+Internal refactor — no user-facing behavior change. Finishes splitting the `Kodiqa` God-class into focused modules.
+
+### Changed
+- **God-class split.** Five cohesive subsystems moved out of `kodiqa.py` into their own modules, each holding a back-reference to the agent while `Kodiqa` keeps thin delegating wrappers (so behavior and every call site are unchanged):
+  - `session_store.py` — conversation persistence (already extracted in 3.7.2)
+  - `context_builder.py` — system-prompt assembly + git/shell/pinned context
+  - `ollama_manager.py` — Ollama server lifecycle, update check, model pull/delete/discovery
+  - `model_registry.py` — API model discovery, `/models` listing, alias/provider resolution
+  - `agent_team.py` — background sub-agents and agent teams
+- `kodiqa.py` shrank from ~6250 to ~5140 lines.
+
+### Tests
+- Added `test_managers.py` (wrapper delegation + pure-method behavior for the extracted classes) and retargeted the moved tests. 361 total.
+
 ## [3.7.2] - 2026-06-06
 
 Internal refactor — no user-facing behavior change.

@@ -73,33 +73,41 @@ class TestAppendToolResults:
 
 
 class TestBuildSystemPrompt:
-    def _agent(self):
-        k = MagicMock()
-        k.cwd = "/proj"
-        k.model = "m"
-        k._persona = None
-        k.memory.get_context.return_value = ""
-        k._load_context_file.return_value = ""
-        k._git_context.return_value = ""
-        k._shell_env_context.return_value = ""
-        k._build_pinned_context.return_value = ""
-        return k
+    """build_system_prompt now lives in ContextBuilder (context_builder.py)."""
+
+    def _builder(self):
+        from context_builder import ContextBuilder
+        agent = MagicMock()
+        agent.cwd = "/proj"
+        agent.model = "m"
+        agent._persona = None
+        agent.memory.get_context.return_value = ""
+        agent._load_context_file.return_value = ""
+        agent._git_context.return_value = ""
+        agent._shell_env_context.return_value = ""
+        agent._build_pinned_context.return_value = ""
+        return ContextBuilder(agent)
 
     def test_base_only(self):
-        k = self._agent()
-        out = Kodiqa._build_system_prompt(k, "BASE cwd={cwd} model={model} mem={memories}")
+        cb = self._builder()
+        out = cb.build_system_prompt("BASE cwd={cwd} model={model} mem={memories}")
         assert out == "BASE cwd=/proj model=m mem="
 
     def test_appends_extras_and_prepends_persona(self):
-        k = self._agent()
         from config import PERSONAS
+        cb = self._builder()
         persona = next(iter(PERSONAS))
-        k._persona = persona
-        k._git_context.return_value = "GIT"
-        k._build_pinned_context.return_value = "PIN"
-        out = Kodiqa._build_system_prompt(k, "BASE")
+        cb.agent._persona = persona
+        cb.agent._git_context.return_value = "GIT"
+        cb.agent._build_pinned_context.return_value = "PIN"
+        out = cb.build_system_prompt("BASE")
         assert out.startswith(PERSONAS[persona]["prompt"])
         assert "GIT" in out and "PIN" in out
+
+    def test_wrapper_delegates(self):
+        k = MagicMock()
+        Kodiqa._build_system_prompt(k, "T")
+        k.context.build_system_prompt.assert_called_once_with("T")
 
 
 class TestMaybeLintFix:

@@ -276,6 +276,9 @@ PERSONAS = {
 # ── Changelog ──
 # Canonical changelog is CHANGELOG.md — this list powers the /changelog command
 CHANGELOG = [
+    {"version": "v3.7.3", "date": "2026-06-06", "changes": [
+        "Internal: finished splitting the God-class — extracted ContextBuilder, OllamaManager, ModelRegistry, and AgentTeam into their own modules. No behavior change.",
+    ]},
     {"version": "v3.7.2", "date": "2026-06-06", "changes": [
         "Internal: unified the Claude + OpenAI-compatible chat loops into one driver; extracted session persistence into SessionStore. No behavior change.",
     ]},
