@@ -7,16 +7,16 @@
 </p>
 
 <p align="center">
-  <em>77 slash commands &bull; 26 tools &bull; lazy MCP tools &bull; RAG search &bull; custom personas &bull; plugins &bull; sub-agents &bull; LSP &bull; 5 themes</em>
+  <em>78 slash commands &bull; 26 tools &bull; lazy MCP tools &bull; RAG search &bull; custom personas &bull; plugins &bull; sub-agents &bull; LSP &bull; 5 themes</em>
 </p>
 
 <p align="center">
   <a href="#install"><img src="https://img.shields.io/badge/python-3.9+-blue?logo=python&logoColor=white" alt="Python 3.9+"/></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-purple" alt="License"/></a>
   <a href="https://github.com/Kodiqa-Solutions/Kodiqa-agent/actions/workflows/ci.yml"><img src="https://github.com/Kodiqa-Solutions/Kodiqa-agent/actions/workflows/ci.yml/badge.svg" alt="CI"/></a>
-  <a href="#testing"><img src="https://img.shields.io/badge/tests-462%20passing-brightgreen" alt="Tests"/></a>
+  <a href="#testing"><img src="https://img.shields.io/badge/tests-471%20passing-brightgreen" alt="Tests"/></a>
   <a href="#api-setup"><img src="https://img.shields.io/badge/providers-7-cyan" alt="7 Providers"/></a>
-  <a href="#26-tools"><img src="https://img.shields.io/badge/commands-77-orange" alt="77 Commands"/></a>
+  <a href="#26-tools"><img src="https://img.shields.io/badge/commands-78-orange" alt="78 Commands"/></a>
 </p>
 
 <p align="center">
@@ -64,10 +64,10 @@
 | **Project indexing** | Yes (symbol extraction) | Yes | Yes (repo map) | No | Yes (LSP) |
 | **Session recovery** | Yes (auto-save) | Yes | No | No | Yes (multi-session) |
 | **Custom agents** | Yes (sub-agents) | No | No | No | Yes |
-| **Desktop app / IDE** | No | Yes (VS Code) | No | No | Yes (VS Code, desktop) |
+| **Desktop app / IDE** | Editor bridge (`--serve`) | Yes (VS Code) | No | No | Yes (VS Code, desktop) |
 | **Install** | `pip install kodiqa` | `npm install -g` | `pip install` | `npm install -g` | `go install` / `npm` |
 | **Language** | Python | TypeScript | Python | TypeScript | Go |
-| **Tests** | 462 | Yes | Yes | Yes | Yes |
+| **Tests** | 471 | Yes | Yes | Yes | Yes |
 | **Open source** | Yes (AGPL-3.0) | Yes (Apache-2.0) | Yes (Apache-2.0) | Yes (Apache-2.0) | Yes (MIT) |
 
 **Kodiqa's unique advantages**: free local models, 7 API providers, multi-model consensus, custom plugins, sub-agents, LSP integration, 5 themes, project templates, batch edit review, conversation branching, budget limits, auto-lint, and auto model discovery — features no other agent offers together.
@@ -92,6 +92,7 @@ kodiqa
 - **Claude Code-style UI** — `❯` prompt with separator line (prompt_toolkit), arrow-key navigation for all prompts
 - **26 tools** — file ops, git, search, web, memory, clipboard, multi-edit, undo, diff apply
 - **7 API providers** — Ollama (local/free), Claude, OpenAI, DeepSeek, Groq, Mistral, Qwen
+- **Editor/IDE bridge** — `kodiqa --serve` exposes a local HTTP API (`/ask`, `/diagnostics`) for VS Code/Zed/Neovim extensions
 - **Cross-provider failover** — if a provider is down/rate-limited, the turn auto-retries on the next configured provider and continues (`/failover`)
 - **TOON output** — `/toon` re-encodes JSON tool results into a compact tabular form (~60% fewer tokens on large arrays)
 - **Custom commands** — drop `.kodiqa/commands/<name>.md` and run it as `/<name>` (with `$ARGUMENTS`/`$1` substitution); `/commands` lists them
@@ -407,6 +408,33 @@ flat no matter how many MCP tools you connect. Toggle with `/mcp lazy off`, or s
 New models are auto-discovered from the APIs — they appear in `/model` and `/models` automatically.
 
 You can also use full model names: `/model qwen3:14b` or `/model claude-opus-4-6`
+
+## Editor / IDE bridge
+
+Run Kodiqa as a small local HTTP server that your editor (VS Code, Zed, Neovim, …)
+can call:
+
+```bash
+kodiqa --serve            # prints the URL + an auth token
+# or, inside a session:  /serve
+```
+
+It binds to `127.0.0.1` only and requires the printed bearer token. Protocol:
+
+| Endpoint | | |
+|----------|---|---|
+| `GET /health` | no auth | `{status, model, version}` |
+| `POST /ask` | `{prompt, context?}` | `{response}` — one-shot model answer (no history, no file edits) |
+| `GET /diagnostics?file=PATH` | | `{file, diagnostics}` from the LSP (start one with `/lsp`) |
+
+```bash
+curl -s localhost:PORT/ask -H "Authorization: Bearer TOKEN" \
+  -d '{"prompt":"explain this","context":"def f(): return 1"}'
+```
+
+`/ask` is a safe, non-streaming Q&A call — ideal for "ask Kodiqa about the selection."
+A minimal reference client is in [`examples/bridge_client.py`](examples/bridge_client.py); editor
+extensions are thin clients over this API.
 
 ## Compact Streaming Mode
 

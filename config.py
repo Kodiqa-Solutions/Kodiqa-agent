@@ -283,6 +283,9 @@ PERSONAS = {
 # ── Changelog ──
 # Canonical changelog is CHANGELOG.md — this list powers the /changelog command
 CHANGELOG = [
+    {"version": "v3.16.0", "date": "2026-06-06", "changes": [
+        "Editor/IDE bridge: kodiqa --serve (or /serve) runs an authenticated localhost HTTP server (/health, /ask, /diagnostics) for editor extensions. One-shot /ask doesn't touch history or edit files. See examples/bridge_client.py.",
+    ]},
     {"version": "v3.15.0", "date": "2026-06-06", "changes": [
         "Custom prompt-template commands: drop .kodiqa/commands/<name>.md and run it as /<name>, with $ARGUMENTS / $1 $2 substitution. /commands lists them. Project overrides global (~/.kodiqa/commands/).",
     ]},

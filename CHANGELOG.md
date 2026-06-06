@@ -4,6 +4,21 @@ All notable changes to Kodiqa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.16.0] - 2026-06-06
+
+Editor / IDE bridge — connect Kodiqa to your editor.
+
+### Added
+- **Bridge server** — `kodiqa --serve` (or `/serve` in a session) runs a small authenticated localhost HTTP server that editor extensions (VS Code, Zed, Neovim, …) can call:
+  - `GET /health` (no auth) → `{status, model, version}`
+  - `POST /ask {prompt, context?}` → `{response}` — a one-shot, non-streaming model answer that doesn't touch conversation history or edit files (safe to call while the CLI is in use)
+  - `GET /diagnostics?file=PATH` → LSP diagnostics for a file (start an LSP with `/lsp`)
+  - Binds to `127.0.0.1` only and requires a per-session bearer token (printed on start). `--port` sets a fixed port.
+- A minimal reference client in `examples/bridge_client.py`; editor extensions are thin clients over this protocol.
+
+### Tests
+- `test_bridge.py` — real in-process server covering health, auth enforcement, `/ask` (with/without context, missing prompt), `/diagnostics` (with/without LSP), and unknown paths. 471 total.
+
 ## [3.15.0] - 2026-06-06
 
 Custom prompt-template commands — your own reusable slash commands.

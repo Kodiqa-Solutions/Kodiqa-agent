@@ -609,6 +609,7 @@ class Kodiqa:
         # TOON: re-encode JSON tool results into a compact tabular form to save
         # context tokens (only when it's actually shorter). Opt-in.
         self.toon_enabled = self.settings.get("toon", False)
+        self._bridge = None  # editor/IDE bridge HTTP server (bridge.py), started via /serve
         self.mcp_lazy = self.settings.get("mcp_lazy", True)
         self._mcp_usage_file = os.path.join(KODIQA_DIR, "mcp_usage.json")
         self._mcp_usage = self._load_mcp_usage()
@@ -728,6 +729,7 @@ class Kodiqa:
         ("/theme", (), "_cmd_theme", "Tools & UI", "<name>", "Switch UI theme"),
         ("/alias", (), "_cmd_alias", "Tools & UI", "<name> <cmd>", "Create a command alias"),
         ("/commands", (), "_cmd_commands", "Tools & UI", "", "List custom prompt-template commands (.kodiqa/commands/*.md)"),
+        ("/serve", (), "_cmd_serve", "Tools & UI", "[port|stop]", "Start the editor/IDE bridge HTTP server"),
         ("/unalias", (), "_cmd_unalias", "Tools & UI", "<name>", "Remove a command alias"),
         ("/notify", (), "_cmd_notify", "Tools & UI", "", "Toggle desktop notifications"),
         ("/optimizer", (), "_cmd_optimizer", "Tools & UI", "", "Toggle cost optimizer tips"),
@@ -937,6 +939,31 @@ class Kodiqa:
         for f in files:
             parts.append(f"\n### {f['rel_path']}\n```\n{f['content']}\n```")
         return "\n".join(parts)
+
+    def run_bridge(self, port=0):
+        """Run as the editor/IDE bridge server (no interactive UI). Blocks until Ctrl+C."""
+        import time as _time
+        from bridge import KodiqaBridge
+        self._detect_git()
+        self._bridge = KodiqaBridge(self, port)
+        self._bridge.start()
+        url = self._bridge.url()
+        self.console.print(Panel(
+            f"[bold green]Kodiqa editor bridge[/]\n\n"
+            f"URL:   [cyan]{url}[/]\n"
+            f"Token: [dim]{self._bridge.token}[/]\n"
+            f"Model: [cyan]{self.model}[/]\n\n"
+            f"[dim]GET {url}/health · POST {url}/ask · GET {url}/diagnostics?file=…\n"
+            f"Point your editor extension here (Authorization: Bearer <token>). Ctrl+C to stop.[/]",
+            title="IDE Bridge", border_style="green",
+        ))
+        try:
+            while True:
+                _time.sleep(1)
+        except KeyboardInterrupt:
+            self.console.print("\n[dim]Stopping bridge…[/]")
+        finally:
+            self._cleanup_children()
 
     def run_headless(self, task, output_file=None):
         """Run a task non-interactively. No prompt, auto-approve everything."""
@@ -1253,6 +1280,12 @@ class Kodiqa:
             self._stop_ollama()
         except Exception:
             _logger.debug("ignored error in _cleanup_children", exc_info=True)
+        try:
+            if getattr(self, "_bridge", None):
+                self._bridge.stop()
+                self._bridge = None
+        except Exception:
+            _logger.debug("ignored error in _cleanup_children", exc_info=True)
 
     def _stop_ollama(self):
         return self.ollama.stop_ollama()
@@ -1372,6 +1405,41 @@ class Kodiqa:
             src = "project" if path.startswith(self.cwd) else "global"
             tail = f" — {desc}" if desc else ""
             self.console.print(f"  [cyan]/{name}[/] [dim]({src}){tail}[/]")
+
+    def _cmd_serve(self, arg):
+        a = arg.strip().lower()
+        if a == "stop":
+            if self._bridge:
+                self._bridge.stop()
+                self._bridge = None
+                self.console.print("[yellow]Editor bridge stopped.[/]")
+            else:
+                self.console.print("[dim]Bridge not running.[/]")
+            return
+        if self._bridge:
+            self.console.print(f"[dim]Bridge already running at {self._bridge.url()}[/]")
+            return
+        from bridge import KodiqaBridge
+        port = int(a) if a.isdigit() else 0
+        try:
+            self._bridge = KodiqaBridge(self, port)
+            self._bridge.start()
+        except Exception as e:
+            self._bridge = None
+            self.console.print(f"[red]Could not start bridge: {e}[/]")
+            return
+        url = self._bridge.url()
+        self.console.print(Panel(
+            f"[bold green]Editor bridge running[/]\n\n"
+            f"URL:   [cyan]{url}[/]\n"
+            f"Token: [dim]{self._bridge.token}[/]\n\n"
+            f"[dim]Editor extensions call:\n"
+            f"  GET  {url}/health\n"
+            f"  POST {url}/ask          {{\"prompt\":\"…\",\"context\":\"…\"}}  (Authorization: Bearer <token>)\n"
+            f"  GET  {url}/diagnostics?file=PATH\n"
+            f"Stop with /serve stop.[/]",
+            title="IDE Bridge", border_style="green",
+        ))
 
     def _cmd_quit(self, arg):
         self._quit()
@@ -3665,6 +3733,37 @@ class Kodiqa:
         self._display_token_usage(stream_usage, elapsed=elapsed)
         return {"text": "".join(full_text), "tool_calls": tool_calls, "stop_reason": stop_reason}
 
+    def _ask_oneshot(self, prompt, system=None):
+        """One-shot, non-streaming model query that does NOT touch history, run
+        tools, or edit files. Used by the editor bridge (/ask). Returns text."""
+        system = system or (f"You are Kodiqa, a coding assistant. Working directory: {self.cwd}. "
+                            "Answer concisely and helpfully.")
+        msgs = [{"role": "user", "content": prompt}]
+        if is_claude_model(self.model) or self._is_live_claude(self.model):
+            if not self.claude_key:
+                return "(no Claude API key set)"
+            try:
+                r = requests.post(CLAUDE_API_URL, headers={
+                    "x-api-key": self.claude_key, "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                }, json={"model": self.model, "max_tokens": 4096, "system": system, "messages": msgs}, timeout=120)
+                r.raise_for_status()
+                return "".join(b.get("text", "") for b in r.json().get("content", []) if b.get("type") == "text")
+            except Exception as e:
+                return f"Error: {e}"
+        provider = self._get_provider_for_model(self.model)
+        if provider:
+            return self._openai_compat_nostream(system, msgs, provider)
+        try:
+            r = requests.post(f"{OLLAMA_URL}/api/chat", json={
+                "model": self.model, "stream": False,
+                "messages": [{"role": "system", "content": system}] + msgs,
+            }, timeout=120)
+            r.raise_for_status()
+            return r.json().get("message", {}).get("content", "")
+        except Exception as e:
+            return f"Error: {e}"
+
     def _claude_nostream(self, system, messages):
         """Non-streaming Claude call (for compact)."""
         if not self.claude_key:
@@ -5649,6 +5748,9 @@ def main():
                         help="Resume a saved history session by id (most recent if no id given)")
     parser.add_argument("--debug", action="store_true",
                         help="Log swallowed/internal errors (DEBUG) to ~/.kodiqa/error.log")
+    parser.add_argument("--serve", action="store_true",
+                        help="Run as the editor/IDE bridge server (no interactive UI)")
+    parser.add_argument("--port", type=int, default=0, help="Port for --serve (default: random)")
     args = parser.parse_args()
 
     if args.debug:
@@ -5662,7 +5764,9 @@ def main():
         kodiqa._resume_id = args.resume
     if args.model:
         kodiqa.model = kodiqa._resolve_model_name(args.model)
-    if args.headless:
+    if args.serve:
+        kodiqa.run_bridge(args.port)
+    elif args.headless:
         kodiqa.run_headless(args.headless, args.output)
     else:
         kodiqa.run()
