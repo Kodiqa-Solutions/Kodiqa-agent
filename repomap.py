@@ -40,7 +40,7 @@ class RepoMap:
         self._has_treesitter = False
         self._parsers = {}
         try:
-            import tree_sitter_languages
+            import tree_sitter_languages  # noqa: F401  -- availability probe
             self._has_treesitter = True
         except ImportError:
             pass

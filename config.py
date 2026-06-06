@@ -335,6 +335,8 @@ DEFAULTS = {
     "skip_dirs": list(SKIP_DIRS),
     "skip_extensions": list(SKIP_EXTENSIONS),
     "hooks": {},
+    "check_updates": True,            # check Ollama model updates + new models on startup
+    "update_check_interval_hours": 24,  # throttle: run that check at most once per N hours (0 = every launch)
 }
 
 
@@ -393,10 +395,18 @@ def load_settings():
 
 
 def save_settings(settings):
-    """Save settings to ~/.kodiqa/settings.json."""
+    """Save settings to ~/.kodiqa/settings.json with owner-only perms (holds API keys)."""
     os.makedirs(KODIQA_DIR, exist_ok=True)
+    try:
+        os.chmod(KODIQA_DIR, 0o700)
+    except OSError:
+        pass
     with open(SETTINGS_FILE, "w") as f:
         json.dump(settings, f, indent=2)
+    try:
+        os.chmod(SETTINGS_FILE, 0o600)  # API keys — restrict to owner
+    except OSError:
+        pass
 
 
 def is_claude_model(model_name):

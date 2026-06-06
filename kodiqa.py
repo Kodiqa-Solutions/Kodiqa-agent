@@ -15,12 +15,12 @@ warnings.filterwarnings("ignore", message=".*urllib3.*")
 
 import requests
 from rich.console import Console
-from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.status import Status
 
 import logging
+import re
 import select
 import signal
 import subprocess
@@ -28,18 +28,18 @@ import time
 
 from config import (
     OLLAMA_URL, OLLAMA_BIN, DEFAULT_MODEL, MODEL_ALIASES, CLAUDE_ALIASES,
-    CLAUDE_API_URL, QWEN_ALIASES, QWEN_API_URL, CONTEXT_FILE, KODIQA_DIR,
+    CLAUDE_API_URL, CONTEXT_FILE, KODIQA_DIR,
     CONFIG_FILE, SYSTEM_PROMPT, SKIP_DIRS, SKIP_EXTENSIONS,
-    MAX_FILE_SIZE, DEFAULTS, OPENAI_COMPAT_PROVIDERS,
+    MAX_FILE_SIZE, OPENAI_COMPAT_PROVIDERS,
     CHANGELOG, PERSONAS,
     load_settings, save_settings, load_config, save_default_config, load_kodiqaignore,
-    is_claude_model, is_qwen_api_model, get_openai_provider, is_openai_compat_model,
+    is_claude_model, get_openai_provider,
 )
 from memory import MemoryStore
 from actions import (
     parse_actions, execute_action, execute_tool_call, execute_tools_parallel, set_console,
     set_batch_mode, get_edit_queue, clear_edit_queue, apply_queued_edit, reject_queued_edit,
-    do_undo_edit, _undo_buffer, set_hooks, set_sandbox,
+    do_undo_edit, _undo_buffer, set_hooks,
 )
 from web import set_search_engine, get_search_engine, set_google_api_keys, get_google_api_keys
 from tools import CLAUDE_TOOLS
@@ -492,6 +492,7 @@ class Kodiqa:
         self.multi_models = []  # default: single model mode
         self._auto_approved = set()  # action types auto-approved this session
         self.session_tokens = {"input": 0, "output": 0, "cache_read": 0, "cache_creation": 0, "cost": 0.0}
+        self._last_context_tokens = 0  # prompt size of the most recent request (for auto-compact)
         self._ollama_started_by_us = False  # track if we started Ollama
         # Setup prompt_toolkit for Claude Code-style UI
         self._history_file = os.path.join(KODIQA_DIR, "input_history")
@@ -1349,11 +1350,29 @@ class Kodiqa:
             pass
 
     def _check_updates(self):
-        """Check for model updates and new models on startup."""
+        """Check for model updates and new models on startup.
+
+        Opt-out via --no-update / config check_updates=false, and throttled to run
+        at most once per update_check_interval_hours (default 24) so the per-model
+        `ollama pull` sweep + ollama.com scrape don't block every launch.
+        """
         import subprocess
+
+        if getattr(self, "_skip_updates", False) or not self.config.get("check_updates", True):
+            return
+        interval_h = self.config.get("update_check_interval_hours", 24)
+        last = self.settings.get("last_update_check", 0)
+        if interval_h > 0 and (time.time() - last) < interval_h * 3600:
+            return
 
         if not self._ensure_ollama():
             return
+        # Record now so a skipped/failed check still throttles the next launch.
+        self.settings["last_update_check"] = time.time()
+        try:
+            save_settings(self.settings)
+        except Exception:
+            pass
 
         try:
             # Get installed models
@@ -2378,7 +2397,6 @@ class Kodiqa:
                 # Auto-switch to this provider's default model if currently on local
                 if not is_claude_model(self.model) and not self._get_provider_for_model(self.model):
                     default_alias = list(prov["aliases"].keys())[0]
-                    default_model = prov["aliases"][default_alias]
                     self.console.print(f"[dim]Use /model {default_alias} to switch to {prov['label']}.[/]")
             else:
                 self.console.print(f"[yellow]Key should start with {prov['key_prefix']}. Not saved.[/]")
@@ -2774,6 +2792,7 @@ class Kodiqa:
                 text = resp.json().get("message", {}).get("content", "")
             if text:
                 self.history = [{"role": "assistant", "content": f"[Conversation Summary]\n{text}"}]
+                self._last_context_tokens = 0  # reset so auto-compact re-measures the shrunk context
                 self.console.print("[green]Conversation compacted.[/]")
             else:
                 self.console.print("[yellow]Couldn't generate summary.[/]")
@@ -2783,9 +2802,10 @@ class Kodiqa:
     # ── Auto-compact when context is getting large ──
 
     def _estimate_tokens(self):
-        """Estimate context tokens — use actual API counts if available, else heuristic."""
-        if self.session_tokens["input"] > 0:
-            return self.session_tokens["input"]
+        """Estimate current context occupancy — use the last request's prompt size if
+        available, else a char-count heuristic. NOT the cumulative session total."""
+        if getattr(self, "_last_context_tokens", 0) > 0:
+            return self._last_context_tokens
         total = sum(len(m.get("content", "")) for m in self.history if isinstance(m.get("content"), str))
         for m in self.history:
             if isinstance(m.get("content"), list):
@@ -2960,7 +2980,6 @@ class Kodiqa:
             entry = queue[current]
             path = entry["path"]
             etype = entry["type"]
-            desc = entry["description"]
             old = entry.get("old_content", "")
             new = entry.get("new_content", "")
 
@@ -3337,7 +3356,13 @@ class Kodiqa:
             self.history.append({"role": "user", "content": msg_text})
         self._pending_files = []
         self._pending_images = []
+        _iteration = 0
+        _max_iter = self.config.get("max_iterations", 15)
         while True:
+            _iteration += 1
+            if _iteration > _max_iter:
+                self.console.print(f"[yellow]Reached max iterations ({_max_iter}). Stopping — raise max_iterations in /config if needed.[/]")
+                break
             memories_ctx = self.memory.get_context()
             context_file_ctx = self._load_context_file()
             system_prompt = SYSTEM_PROMPT.format(cwd=self.cwd, model=self.model, memories=memories_ctx)
@@ -3428,7 +3453,13 @@ class Kodiqa:
         self._pending_files = []
         self._pending_images = []
 
+        _iteration = 0
+        _max_iter = self.config.get("max_iterations", 15)
         while True:
+            _iteration += 1
+            if _iteration > _max_iter:
+                self.console.print(f"[yellow]Reached max iterations ({_max_iter}). Stopping — raise max_iterations in /config if needed.[/]")
+                break
             memories_ctx = self.memory.get_context()
             context_file_ctx = self._load_context_file()
             system_prompt = CLAUDE_SYSTEM.format(cwd=self.cwd, model=self.model, memories=memories_ctx)
@@ -3461,7 +3492,6 @@ class Kodiqa:
 
             text_content = response.get("text", "")
             tool_calls = response.get("tool_calls", [])
-            stop_reason = response.get("stop_reason", "end_turn")
 
             # Build assistant message content blocks
             assistant_content = []
@@ -3882,7 +3912,13 @@ class Kodiqa:
         self._pending_files = []
         self._pending_images = []
 
+        _iteration = 0
+        _max_iter = self.config.get("max_iterations", 15)
         while True:
+            _iteration += 1
+            if _iteration > _max_iter:
+                self.console.print(f"[yellow]Reached max iterations ({_max_iter}). Stopping — raise max_iterations in /config if needed.[/]")
+                break
             memories_ctx = self.memory.get_context()
             context_file_ctx = self._load_context_file()
             system_prompt = CLAUDE_SYSTEM.format(cwd=self.cwd, model=self.model, memories=memories_ctx)
@@ -4444,6 +4480,10 @@ class Kodiqa:
         self.session_tokens["output"] += out
         self.session_tokens["cache_read"] += cache_read
         self.session_tokens["cache_creation"] += cache_create
+        # Current context-window occupancy = the most recent request's prompt size
+        # (input + any cached prompt tokens), NOT the cumulative session sum. Used by
+        # auto-compact so it reflects live context, not lifetime totals.
+        self._last_context_tokens = inp + cache_read + cache_create
         cost_rates = COST_TABLE.get(model, (0, 0))
         cost = (inp * cost_rates[0] + out * cost_rates[1]) / 1_000_000
         self.session_tokens["cost"] += cost
@@ -5832,9 +5872,12 @@ def main():
     parser.add_argument("--headless", type=str, metavar="TASK", help="Run non-interactively with given task")
     parser.add_argument("--model", type=str, metavar="MODEL", help="Model to use")
     parser.add_argument("--output", type=str, metavar="FILE", help="Output file for headless mode")
+    parser.add_argument("--no-update", action="store_true", help="Skip the startup model update/discovery check")
     args = parser.parse_args()
 
     kodiqa = Kodiqa()
+    if args.no_update:
+        kodiqa._skip_updates = True
     if args.model:
         kodiqa.model = kodiqa._resolve_model_name(args.model)
     if args.headless:

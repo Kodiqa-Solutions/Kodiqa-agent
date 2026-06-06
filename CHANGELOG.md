@@ -4,6 +4,23 @@ All notable changes to Kodiqa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.4.0] - 2026-06-06
+
+### Fixed
+- **Auto-compact death spiral**: `_estimate_tokens` used the cumulative lifetime input-token sum, so after enough turns auto-compact fired on *every* message, repeatedly nuking the conversation. Now tracks the most recent request's prompt size and resets after compaction.
+- **Command injection in `git_diff`**: the auto-approved `git_diff` tool interpolated args into a `shell=True` string (RCE via prompt injection). Now runs `git diff` via argv with `shlex`, no shell.
+- **`/team` crashed with `NameError`**: `re` was used in `team_worker` but never imported at module level. Added top-level `import re`.
+- **Unbounded agentic loops**: `max_iterations` was defined but never enforced; all three chat loops were `while True:`. Now capped (default 15, configurable).
+- **API keys world-readable**: `~/.kodiqa/settings.json` is now written with `0600` perms (dir `0700`).
+
+### Changed
+- **Startup is no longer blocking**: the model update/discovery check (which ran `ollama pull` on every installed model + scraped ollama.com on every launch) is now throttled to once per `update_check_interval_hours` (default 24) and skippable via `--no-update` or `check_updates: false` config.
+
+### Added
+- `--no-update` CLI flag; `check_updates` / `update_check_interval_hours` config options.
+- `ruff` linting (pyflakes rules) + a CI lint step; removed dead code and unused imports across the codebase.
+- Regression tests for the git_diff-injection and auto-compact fixes (290 tests total).
+
 ## [3.3.9] - 2026-06-06
 
 ### Added

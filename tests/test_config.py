@@ -1,13 +1,10 @@
 """Tests for config.py functions and constants."""
 
 import json
-import os
-import pytest
 
 from config import (
     is_claude_model, is_qwen_api_model, get_openai_provider, is_openai_compat_model,
     CONFIRM_ACTIONS, BLOCKED_COMMANDS, OPENAI_COMPAT_PROVIDERS,
-    MODEL_ALIASES, CLAUDE_ALIASES, QWEN_ALIASES,
     DEFAULTS, load_config,
 )
 

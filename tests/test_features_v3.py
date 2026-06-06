@@ -3,7 +3,6 @@
 import json
 import os
 import time
-import tempfile
 from unittest.mock import MagicMock, patch
 import pytest
 
@@ -403,7 +402,6 @@ class TestAtFileReferences:
 
     def test_pending_init(self):
         from kodiqa import Kodiqa
-        agent = MagicMock(spec=Kodiqa)
         # These are set in __init__
         assert hasattr(Kodiqa, '_process_at_references')
         assert hasattr(Kodiqa, '_paste_clipboard_image')

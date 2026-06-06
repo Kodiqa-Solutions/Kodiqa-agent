@@ -1,6 +1,5 @@
 """Shared fixtures for Kodiqa tests."""
 
-import os
 import sqlite3
 import pytest
 

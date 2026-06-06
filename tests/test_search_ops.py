@@ -1,7 +1,5 @@
 """Tests for search operation handlers (actions.py)."""
 
-import os
-import pytest
 from actions import do_list_dir, do_tree, do_glob, do_grep
 
 

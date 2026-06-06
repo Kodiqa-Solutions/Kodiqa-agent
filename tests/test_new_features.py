@@ -4,7 +4,6 @@ import os
 import sys
 from io import StringIO
 from unittest.mock import MagicMock, patch
-import pytest
 
 
 class TestStreamWriterThinking:
@@ -86,14 +85,8 @@ class TestCompletePathHelper:
         (tmp_path / "file2.txt").write_text("x")
         (tmp_path / "subdir").mkdir()
 
-        from kodiqa import Kodiqa
         # We can't easily instantiate Kodiqa without full setup,
-        # so test the static logic directly
-        expanded = str(tmp_path) + "/"
-        dirname = os.path.dirname(expanded) or "."
-        basename = os.path.basename(expanded)
-        entries = sorted(os.listdir(dirname))
-        # Just verify the directory has our files
+        # so just verify the directory has our files
         assert "file1.py" in os.listdir(str(tmp_path))
         assert "file2.txt" in os.listdir(str(tmp_path))
 
@@ -101,7 +94,7 @@ class TestCompletePathHelper:
         """Complete path for non-existent directory returns empty."""
         # Test the core logic that _complete_path uses
         try:
-            entries = os.listdir("/nonexistent_path_xyz_123")
+            os.listdir("/nonexistent_path_xyz_123")
             assert False, "Should have raised"
         except OSError:
             pass  # expected
@@ -190,3 +183,22 @@ class TestSlashCommands:
     def test_no_duplicate_commands(self):
         from kodiqa import Kodiqa
         assert len(Kodiqa._SLASH_COMMANDS) == len(set(Kodiqa._SLASH_COMMANDS))
+
+
+class TestContextEstimate:
+    """Auto-compact must use the last request's prompt size, not the cumulative
+    session total (regression for the auto-compact death-spiral fix)."""
+
+    def test_uses_last_context_tokens(self):
+        from kodiqa import Kodiqa
+        k = MagicMock()
+        k._last_context_tokens = 1234
+        assert Kodiqa._estimate_tokens(k) == 1234
+
+    def test_falls_back_to_heuristic_when_zero(self):
+        from kodiqa import Kodiqa
+        k = MagicMock()
+        k._last_context_tokens = 0
+        k.history = [{"role": "user", "content": "x" * 40}]
+        # char/4 heuristic, NOT a cumulative session counter
+        assert Kodiqa._estimate_tokens(k) == 10

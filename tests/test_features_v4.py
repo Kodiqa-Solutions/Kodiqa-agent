@@ -1,14 +1,7 @@
 """Tests for v4.0 features: lint auto-fix, test-fix, hooks, watch AI triggers,
 architect mode, headless mode, worktree isolation, sandbox, repo map, agent teams."""
 
-import json
-import os
-import re
-import subprocess
-import time
-import tempfile
-from unittest.mock import MagicMock, patch
-import pytest
+from unittest.mock import MagicMock
 
 
 # ── F1: Auto Lint-Fix Loop ──
@@ -62,18 +55,16 @@ class TestAutoTestFix:
 
 class TestHooksSystem:
     def test_set_hooks(self):
-        from actions import set_hooks, _hooks
-        set_hooks({"pre_write_file": "echo ok", "post_git_commit": "notify-send done"})
-        from actions import _hooks
-        assert _hooks.get("pre_write_file") == "echo ok"
-        assert _hooks.get("post_git_commit") == "notify-send done"
-        set_hooks({})  # Cleanup
+        import actions
+        actions.set_hooks({"pre_write_file": "echo ok", "post_git_commit": "notify-send done"})
+        assert actions._hooks.get("pre_write_file") == "echo ok"
+        assert actions._hooks.get("post_git_commit") == "notify-send done"
+        actions.set_hooks({})  # Cleanup
 
     def test_set_hooks_invalid(self):
-        from actions import set_hooks, _hooks
-        set_hooks("not a dict")
-        from actions import _hooks
-        assert _hooks == {}
+        import actions
+        actions.set_hooks("not a dict")
+        assert actions._hooks == {}
 
     def test_run_hook_success(self):
         from actions import _run_hook
@@ -234,13 +225,11 @@ class TestSandbox:
         assert "/sandbox" in Kodiqa._SLASH_COMMANDS
 
     def test_set_sandbox(self):
-        from actions import set_sandbox, _sandbox_enabled
-        set_sandbox(True)
-        from actions import _sandbox_enabled
-        assert _sandbox_enabled is True
-        set_sandbox(False)
-        from actions import _sandbox_enabled
-        assert _sandbox_enabled is False
+        import actions
+        actions.set_sandbox(True)
+        assert actions._sandbox_enabled is True
+        actions.set_sandbox(False)
+        assert actions._sandbox_enabled is False
 
     def test_sandbox_wrap_fallback(self):
         from actions import _sandbox_wrap

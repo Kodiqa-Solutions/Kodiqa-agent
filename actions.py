@@ -321,7 +321,7 @@ def _dispatch(name, p, memory):
         "web_search": lambda: do_web_search(p.get("query", "")),
         "web_fetch": lambda: do_web_fetch(p.get("url", "")),
         "git_status": lambda: do_run_command("git status"),
-        "git_diff": lambda: do_run_command(f"git diff {p.get('args', '')}".strip()),
+        "git_diff": lambda: do_git_diff(p.get('args', '')),
         "git_commit": lambda: do_git_commit(p.get("message", "")),
         "memory_store": lambda: memory.store(p.get("content", ""), p.get("tags", "")),
         "memory_search": lambda: memory.search(p.get("query", "")),
@@ -680,6 +680,24 @@ def do_web_fetch(url):
     return fetch_page(url)
 
 
+def do_git_diff(args=""):
+    """Run `git diff` with optional args, via argv (no shell) to prevent injection."""
+    import shlex
+    try:
+        extra = shlex.split(args) if args else []
+    except ValueError as e:
+        return f"Invalid git diff arguments: {e}"
+    try:
+        result = subprocess.run(
+            ["git", "diff", *extra],
+            capture_output=True, text=True, timeout=30,
+        )
+        output = result.stdout + result.stderr
+        return output.strip() if output.strip() else "(no changes)"
+    except Exception as e:
+        return f"Git diff error: {e}"
+
+
 def do_git_commit(message):
     if not message.strip():
         return "No commit message provided."
@@ -989,19 +1007,7 @@ def do_diff_apply(path, patch):
     with open(path, "r") as f:
         content = f.read()
     _undo_buffer[os.path.abspath(path)].append(content)
-    # Parse unified diff and apply
-    lines = content.splitlines(keepends=True)
-    patch_lines = patch.splitlines(keepends=True)
-    result_lines = list(lines)
-    offset = 0
-    for line in patch_lines:
-        line_stripped = line.rstrip("\n")
-        if line_stripped.startswith("@@"):
-            import re as _re
-            m = _re.search(r"@@ -(\d+)", line_stripped)
-            if m:
-                offset = int(m.group(1)) - 1
-    # Simple approach: just apply via subprocess patch if available
+    # Apply via the system `patch` command.
     try:
         proc = subprocess.run(
             ["patch", path],

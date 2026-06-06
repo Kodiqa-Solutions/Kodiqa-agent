@@ -1,6 +1,5 @@
 """Tests for memory.py MemoryStore."""
 
-import pytest
 
 
 class TestMemoryStore:

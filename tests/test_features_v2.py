@@ -1,11 +1,6 @@
 """Tests for v2.0 features: pin, alias, notify, optimizer, themes, share, PR, templates, plugins, agents, LSP, voice, diagrams."""
 
-import json
-import os
-import sys
-import tempfile
-from io import StringIO
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 import pytest
 
 
@@ -300,7 +295,6 @@ class TestShareSession:
         k.model = "test-model"
         k.session_tokens = {"input": 100, "output": 50, "cost": 0.001}
         k.console = MagicMock()
-        exports_dir = tmp_path / "exports"
         with patch("kodiqa.KODIQA_DIR", str(tmp_path)):
             Kodiqa._share_session_html(k)
         # Check it was called with path info

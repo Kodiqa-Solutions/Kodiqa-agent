@@ -1,12 +1,11 @@
 """Tests for edit queue (batch mode) and undo buffer."""
 
 import os
-import pytest
 from actions import (
     set_batch_mode, get_edit_queue, clear_edit_queue,
     apply_queued_edit, reject_queued_edit,
     do_write_file, do_edit_file, do_edit_file_all,
-    do_undo_edit, _undo_buffer,
+    do_undo_edit,
 )
 
 

@@ -1,9 +1,8 @@
 """Tests for action dispatch and execution."""
 
 import os
-import pytest
 from unittest.mock import MagicMock
-from actions import _dispatch, _describe_action, execute_action, execute_tool_call
+from actions import _dispatch, _describe_action, execute_action, do_git_diff
 
 
 class TestDispatch:
@@ -53,6 +52,29 @@ class TestDescribeAction:
         assert "Move" in desc
         assert "/a" in desc
         assert "/b" in desc
+
+
+class TestGitDiffSecurity:
+    """git_diff must run via argv (no shell) — regression for the injection fix."""
+
+    def test_no_shell_injection(self, tmp_path):
+        sentinel = tmp_path / "PWNED"
+        # With shell=True this would create the sentinel; with argv git just
+        # treats the tokens as (bogus) pathspecs and never runs a shell.
+        do_git_diff(f"; touch {sentinel}")
+        assert not sentinel.exists()
+
+    def test_returns_string(self):
+        # Plain call should return a string, not raise.
+        assert isinstance(do_git_diff(""), str)
+
+    def test_invalid_args_handled(self):
+        # Unbalanced quotes -> shlex error is caught, not raised.
+        assert "Invalid git diff arguments" in do_git_diff('"unterminated')
+
+    def test_routes_via_dispatch(self):
+        # The dispatch entry must point at do_git_diff, not a shell string.
+        assert isinstance(_dispatch("git_diff", {"args": ""}, None), str)
 
     def test_unknown_action(self):
         desc = _describe_action("some_action", {"key": "val"})

@@ -1,6 +1,5 @@
 """Tests for web.py functions."""
 
-import pytest
 from unittest.mock import patch, MagicMock
 from web import format_results, search_duckduckgo, fetch_page
 

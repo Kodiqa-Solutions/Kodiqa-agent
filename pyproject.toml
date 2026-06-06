@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kodiqa"
-version = "3.3.9"
+version = "3.4.0"
 description = "AI coding agent that runs anywhere — 7 providers, 26 tools, plugins, sub-agents, LSP, themes, RAG, 69 commands"
 readme = "README.md"
 license = {text = "AGPL-3.0-only"}
@@ -40,7 +40,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0"]
+dev = ["pytest>=7.0", "ruff>=0.6"]
 
 [project.scripts]
 kodiqa = "kodiqa:main"
@@ -54,6 +54,16 @@ Changelog = "https://github.com/Kodiqa-Solutions/Kodiqa-agent/blob/main/CHANGELO
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+
+[tool.ruff]
+line-length = 200
+target-version = "py39"
+
+[tool.ruff.lint]
+# F = pyflakes (undefined names, unused imports), E9 = syntax errors.
+# These catch real bugs (e.g. the /team NameError) without enforcing style churn.
+select = ["F", "E9"]
+ignore = ["F541"]  # f-string without placeholders — cosmetic, common in this UI code
 
 [tool.setuptools]
 py-modules = ["kodiqa", "actions", "tools", "config", "web", "memory", "mcp", "templates", "lsp", "embeddings", "repomap"]

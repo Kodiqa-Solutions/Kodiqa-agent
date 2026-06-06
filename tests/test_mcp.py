@@ -1,8 +1,7 @@
 """Tests for MCP (Model Context Protocol) client."""
 
 import json
-import pytest
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock
 from mcp import MCPServer, MCPManager
 
 

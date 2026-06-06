@@ -1,7 +1,6 @@
 """Tests for file operation handlers (actions.py)."""
 
 import os
-import pytest
 from actions import (
     do_read_file, do_write_file, do_edit_file, do_edit_file_all,
     do_multi_edit, _undo_buffer,
