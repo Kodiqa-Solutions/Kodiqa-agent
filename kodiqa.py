@@ -561,6 +561,10 @@ class Kodiqa:
         self._branches = {}  # {name: {"history": [...], "model": ...}}
         # MCP server manager
         self.mcp = MCPManager()
+        # Best-effort cleanup of spawned child processes (MCP/LSP/Ollama) even on
+        # crash or unexpected exit, so they aren't orphaned.
+        import atexit
+        atexit.register(self._cleanup_children)
         # Auto git commit after AI edits
         self.auto_commit = self.settings.get("auto_commit", False)
         # Budget limit (0 = no limit)
@@ -1298,7 +1302,7 @@ class Kodiqa:
         # Try to start Ollama
         self.console.print("[dim]Starting Ollama...[/]")
         try:
-            subprocess.Popen(
+            proc = subprocess.Popen(
                 [OLLAMA_BIN, "serve"],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -1310,6 +1314,7 @@ class Kodiqa:
                     requests.get(f"{OLLAMA_URL}/api/tags", timeout=2)
                     self.console.print("[green]●[/] Ollama started")
                     self._ollama_started_by_us = True
+                    self._ollama_proc = proc  # track OUR process for clean shutdown
                     return True
                 except Exception:
                     continue
@@ -1358,15 +1363,43 @@ class Kodiqa:
         # Return top 100 by popularity (page is already sorted by pulls)
         return models[:100]
 
+    def _cleanup_children(self):
+        """Stop spawned child processes (MCP, LSP, Ollama). Safe to call repeatedly;
+        registered with atexit so children aren't orphaned on crash/exit."""
+        try:
+            self.mcp.stop_all()
+        except Exception:
+            pass
+        try:
+            if getattr(self, "_lsp_client", None):
+                self._lsp_client.stop()
+                self._lsp_client = None
+        except Exception:
+            pass
+        try:
+            self._stop_ollama()
+        except Exception:
+            pass
+
     def _stop_ollama(self):
-        """Stop Ollama if we started it."""
+        """Stop only the Ollama process WE started (don't pkill unrelated ones)."""
         if not self._ollama_started_by_us:
             return
-        import subprocess
+        proc = getattr(self, "_ollama_proc", None)
         try:
-            subprocess.run(["pkill", "-f", "ollama"], capture_output=True, timeout=5)
-            self.console.print("[green]●[/] Ollama stopped")
+            if proc and proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except Exception:
+                    proc.kill()
+                    try:
+                        proc.wait(timeout=5)
+                    except Exception:
+                        pass
+                self.console.print("[green]●[/] Ollama stopped")
             self._ollama_started_by_us = False
+            self._ollama_proc = None
         except Exception:
             pass
 
@@ -3820,6 +3853,7 @@ class Kodiqa:
         finally:
             cleanup()
             stall.stop()
+            resp.close()  # release the pooled connection even on mid-stream error
 
         if self._stream_interrupted:
             thinking_status.stop()
@@ -4180,9 +4214,14 @@ class Kodiqa:
             "model": model,
             "messages": messages,
             "tools": self._get_openai_tools(),
-            "max_tokens": 8192,
             "stream": True,
         }
+        # OpenAI reasoning (o-series: o1/o3/o4...) reject `max_tokens` and require
+        # `max_completion_tokens`; using the wrong key returns a 400.
+        if provider == "openai" and re.match(r"^o\d", model):
+            body["max_completion_tokens"] = 8192
+        else:
+            body["max_tokens"] = 8192
         # stream_options not supported by all providers
         if provider not in ("groq",):
             body["stream_options"] = {"include_usage": True}
@@ -4314,6 +4353,7 @@ class Kodiqa:
         finally:
             stall.stop()
             cleanup()
+            resp.close()  # release the pooled connection even on mid-stream error
 
         if self._stream_interrupted:
             thinking_status.stop()
@@ -4512,6 +4552,7 @@ class Kodiqa:
         finally:
             stall.stop()
             cleanup()
+            resp.close()  # release the pooled connection even on mid-stream error
         if self._stream_interrupted:
             thinking_status.stop()
             writer.flush_pending()

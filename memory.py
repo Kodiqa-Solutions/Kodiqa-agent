@@ -10,7 +10,9 @@ from config import MEMORY_DB, KODIQA_DIR
 class MemoryStore:
     def __init__(self):
         os.makedirs(KODIQA_DIR, exist_ok=True)
-        self.conn = sqlite3.connect(MEMORY_DB)
+        # check_same_thread=False: memory_search is dispatched from the parallel
+        # tool ThreadPoolExecutor, so the connection is used off the creating thread.
+        self.conn = sqlite3.connect(MEMORY_DB, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("""
             CREATE TABLE IF NOT EXISTS memories (

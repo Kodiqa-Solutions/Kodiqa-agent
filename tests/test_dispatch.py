@@ -2,7 +2,7 @@
 
 import os
 from unittest.mock import MagicMock
-from actions import _dispatch, _describe_action, execute_action, do_git_diff
+from actions import _dispatch, _describe_action, execute_action, do_git_diff, do_run_command
 
 
 class TestDispatch:
@@ -75,6 +75,15 @@ class TestGitDiffSecurity:
     def test_routes_via_dispatch(self):
         # The dispatch entry must point at do_git_diff, not a shell string.
         assert isinstance(_dispatch("git_diff", {"args": ""}, None), str)
+
+
+class TestBlockedCommands:
+    def test_exact_match_blocked(self):
+        assert "Blocked" in do_run_command("rm -rf /")
+
+    def test_extra_whitespace_still_blocked(self):
+        # Normalization regression: collapsed spaces must still match the blocklist.
+        assert "Blocked" in do_run_command("rm   -rf   /")
 
     def test_unknown_action(self):
         desc = _describe_action("some_action", {"key": "val"})

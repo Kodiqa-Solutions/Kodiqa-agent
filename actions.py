@@ -1,6 +1,7 @@
 """Kodiqa action parser and executor - 20 tools mirroring Claude Code."""
 
 import base64
+import json
 import os
 import re
 import subprocess
@@ -32,11 +33,16 @@ def set_hooks(hooks_dict):
     _hooks = hooks_dict if isinstance(hooks_dict, dict) else {}
 
 def _run_hook(hook_cmd, params):
-    """Run a hook command with {param} substitution. Returns True if success."""
+    """Run a hook command with {param} substitution. Returns True if success.
+
+    Param values are shell-quoted before substitution so a model-controlled value
+    (e.g. a file path) can't inject extra shell commands into a user-defined hook.
+    """
+    import shlex
     try:
         cmd = hook_cmd
         for k, v in params.items():
-            cmd = cmd.replace(f"{{{k}}}", str(v))
+            cmd = cmd.replace(f"{{{k}}}", shlex.quote(str(v)))
         result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
         return result.returncode == 0
     except Exception:
@@ -651,8 +657,11 @@ def _grep_file(fpath, regex, results):
 def do_run_command(command):
     if not command.strip():
         return "No command provided."
+    # Best-effort blocklist (real defense is the confirmation prompt + sandbox).
+    # Normalize whitespace so `rm  -rf  /` and `rm -rf /` match the same pattern.
+    normalized = " ".join(command.split())
     for blocked in BLOCKED_COMMANDS:
-        if blocked in command:
+        if blocked in command or " ".join(blocked.split()) in normalized:
             return f"Blocked dangerous command: {command}"
     run_cmd = command
     if _sandbox_enabled:
@@ -958,12 +967,16 @@ def do_multi_edit(path, edits):
     path = os.path.expanduser(path)
     if not os.path.isfile(path):
         return f"File not found: {path}"
-    with open(path, "r") as f:
-        content = f.read()
-    # Save to undo buffer
-    _undo_buffer[os.path.abspath(path)].append(content)
+    # Ollama text mode passes `edits` as a JSON string — parse it.
+    if isinstance(edits, str):
+        try:
+            edits = json.loads(edits)
+        except (ValueError, TypeError):
+            return "edits must be a list (or JSON array) of {old_string, new_string} objects"
     if not isinstance(edits, list):
         return "edits must be a list of {old_string, new_string} objects"
+    with open(path, "r") as f:
+        content = f.read()
     applied = 0
     new_content = content
     for edit in edits:
@@ -974,6 +987,8 @@ def do_multi_edit(path, edits):
             applied += 1
     if applied == 0:
         return f"No edits matched in {path}"
+    # Push to undo buffer only once we know we'll actually change the file.
+    _undo_buffer[os.path.abspath(path)].append(content)
     _show_diff(path, content, new_content)
     with open(path, "w") as f:
         f.write(new_content)

@@ -4,6 +4,25 @@ All notable changes to Kodiqa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.6.0] - 2026-06-06
+
+Medium-tier audit fixes (cross-platform, correctness, stability, security).
+
+### Fixed
+- **OpenAI o-series (o3/o3-mini/o4-mini) errored** — now send `max_completion_tokens` instead of `max_tokens` (the o-series reject the latter with a 400).
+- **`OLLAMA_BIN` was macOS-only** — now resolved via `$OLLAMA_BIN` → `PATH` (`shutil.which`) → the macOS app bundle, so `/pull`, `/delete`, and update checks work on Linux/Windows.
+- **`multi_edit` failed in Ollama text mode** — `edits` arriving as a JSON string is now parsed. Also no longer consumes an undo slot on a no-op.
+- **`_stop_ollama` killed all Ollama processes** (`pkill -f ollama`) — now stops only the process Kodiqa started, and reaps it. Added an `atexit` handler that cleans up spawned MCP/LSP/Ollama children even on crash.
+- **`memory_search` could fail under parallel dispatch** — SQLite connection now opened with `check_same_thread=False` (it's used from the tool thread pool).
+- **Streaming connection leak** — all three chat loops now `resp.close()` in `finally`, not just on interrupt.
+
+### Security
+- **Hook command injection** — hook `{param}` values are now `shlex.quote`d before substitution, so a model-controlled value can't inject shell commands.
+- **Blocklist hardening** — `run_command` now normalizes whitespace before matching `BLOCKED_COMMANDS`, so `rm  -rf  /` (extra spaces) is caught.
+
+### Tests
+- Added regressions for o-series body, multi_edit JSON-string input, and blocklist normalization (300 total).
+
 ## [3.5.0] - 2026-06-06
 
 High-severity fixes from the 2026-06-06 audit (security + data-loss).

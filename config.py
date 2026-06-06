@@ -2,9 +2,16 @@
 
 import json
 import os
+import shutil
 
 OLLAMA_URL = "http://localhost:11434"
-OLLAMA_BIN = "/Applications/Ollama.app/Contents/Resources/ollama"
+# Resolve the ollama binary cross-platform: explicit env override, then PATH, then
+# the macOS app bundle as a last resort. (Hardcoding the .app path broke Linux/Windows.)
+OLLAMA_BIN = (
+    os.environ.get("OLLAMA_BIN")
+    or shutil.which("ollama")
+    or "/Applications/Ollama.app/Contents/Resources/ollama"
+)
 DEFAULT_MODEL = "qwen3-coder"
 
 # Local Ollama models

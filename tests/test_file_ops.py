@@ -113,6 +113,19 @@ class TestEditFileAll:
 
 
 class TestMultiEdit:
+    def test_accepts_json_string_edits(self, tmp_path):
+        """Regression: Ollama text mode passes `edits` as a JSON string."""
+        import json
+        f = tmp_path / "ms.py"
+        f.write_text("aaa bbb\n")
+        edits = json.dumps([
+            {"old_string": "aaa", "new_string": "XXX"},
+            {"old_string": "bbb", "new_string": "YYY"},
+        ])
+        result = do_multi_edit(str(f), edits)
+        assert "2/2" in result
+        assert f.read_text() == "XXX YYY\n"
+
     def test_applies_sequential_edits(self, tmp_path):
         f = tmp_path / "multi.py"
         f.write_text("def foo():\n    return bar\n")

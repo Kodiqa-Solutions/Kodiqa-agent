@@ -214,3 +214,24 @@ class TestCostTable:
             target = CLAUDE_ALIASES[alias]
             assert target in COST_TABLE, f"{alias} -> {target} missing from COST_TABLE ($0 cost)"
             assert COST_TABLE[target][0] > 0 and COST_TABLE[target][1] > 0
+
+
+class TestOpenAIRequestBody:
+    """OpenAI o-series need max_completion_tokens; others need max_tokens."""
+
+    def _body(self, model, provider="openai"):
+        from kodiqa import Kodiqa
+        k = MagicMock()
+        k.model = model
+        k.settings = {}
+        k._get_openai_tools.return_value = []
+        return Kodiqa._build_openai_request_body(k, [], provider)
+
+    def test_o_series_uses_max_completion_tokens(self):
+        for m in ("o3", "o3-mini", "o4-mini"):
+            b = self._body(m)
+            assert "max_completion_tokens" in b and "max_tokens" not in b, m
+
+    def test_gpt_uses_max_tokens(self):
+        b = self._body("gpt-4o")
+        assert "max_tokens" in b and "max_completion_tokens" not in b
