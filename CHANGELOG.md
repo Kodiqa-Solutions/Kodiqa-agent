@@ -4,6 +4,15 @@ All notable changes to Kodiqa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.16.2] - 2026-06-06
+
+### Fixed
+- **A failed request no longer crashes the whole CLI.** When a model request failed early (e.g. a 404 for an unavailable model, or a 401), the failover path checked an uninitialized `_stream_interrupted` flag and raised `AttributeError`, which bubbled all the way up and dropped you back to the shell. The flag is now initialized at startup.
+- **The REPL is crash-resistant in general.** Any unexpected error while handling one input is now logged to `~/.kodiqa/error.log`, shown as a friendly message, and returns you to the prompt with your session intact — instead of exiting. (Ctrl+C still quits.)
+
+### Tests
+- Regression tests for the failover early-failure path and `_stream_interrupted` initialization. 473 total.
+
 ## [3.16.1] - 2026-06-06
 
 ### Added

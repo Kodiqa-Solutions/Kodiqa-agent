@@ -543,6 +543,7 @@ class Kodiqa:
         self.session_tokens = {"input": 0, "output": 0, "cache_read": 0, "cache_creation": 0, "cost": 0.0}
         self._last_context_tokens = 0  # prompt size of the most recent request (for auto-compact)
         self._ollama_started_by_us = False  # track if we started Ollama
+        self._stream_interrupted = False  # set True when Esc/Ctrl+C aborts a stream; init'd here so an early request failure (before _start_stream_interrupt) never AttributeErrors in failover
         # Setup prompt_toolkit for Claude Code-style UI
         self._history_file = os.path.join(KODIQA_DIR, "input_history")
         self._pt_style = PTStyle.from_dict({
@@ -1019,35 +1020,44 @@ class Kodiqa:
                 except (EOFError, KeyboardInterrupt):
                     self._quit()
                     return
-                # Process queued AI triggers from file watchers
-                if not user_input.strip() and self._ai_trigger_queue:
-                    trigger = self._ai_trigger_queue.pop(0)
-                    rel = os.path.relpath(trigger["file"], self.cwd)
-                    self.console.print(f"  [magenta]⚡ Processing AI trigger:[/] {rel}:{trigger['line']}")
-                    self._remove_ai_trigger(trigger["file"], trigger["line"])
-                    self._chat(f"In file {rel}, execute this instruction: {trigger['instruction']}\nRead the file first to understand the context.")
-                    continue
-                if not user_input.strip():
-                    continue
-                if user_input.strip().lower() in ("quit", "exit"):
-                    self._quit()
-                    return
-                elif user_input.strip().startswith("/"):
-                    self._handle_slash(user_input.strip())
-                else:
-                    # Process @file references, auto-detect images, !img paste
-                    user_input, attached_files, attached_images = self._process_at_references(user_input)
-                    if "!img" in user_input:
-                        img = self._paste_clipboard_image()
-                        if img:
-                            attached_images.append(img)
-                        elif not attached_images:
-                            self.console.print("[dim]No image found on clipboard.[/]")
-                        user_input = user_input.replace("!img", "").strip()
-                    self._pending_files = attached_files
-                    self._pending_images = attached_images
-                    if user_input.strip():
-                        self._chat(user_input)
+                # Any error while handling one input must NOT crash the REPL — log it,
+                # show a friendly message, and return to the prompt. (KeyboardInterrupt
+                # is BaseException, so Ctrl+C still propagates to the outer handler.)
+                try:
+                    # Process queued AI triggers from file watchers
+                    if not user_input.strip() and self._ai_trigger_queue:
+                        trigger = self._ai_trigger_queue.pop(0)
+                        rel = os.path.relpath(trigger["file"], self.cwd)
+                        self.console.print(f"  [magenta]⚡ Processing AI trigger:[/] {rel}:{trigger['line']}")
+                        self._remove_ai_trigger(trigger["file"], trigger["line"])
+                        self._chat(f"In file {rel}, execute this instruction: {trigger['instruction']}\nRead the file first to understand the context.")
+                        continue
+                    if not user_input.strip():
+                        continue
+                    if user_input.strip().lower() in ("quit", "exit"):
+                        self._quit()
+                        return
+                    elif user_input.strip().startswith("/"):
+                        self._handle_slash(user_input.strip())
+                    else:
+                        # Process @file references, auto-detect images, !img paste
+                        user_input, attached_files, attached_images = self._process_at_references(user_input)
+                        if "!img" in user_input:
+                            img = self._paste_clipboard_image()
+                            if img:
+                                attached_images.append(img)
+                            elif not attached_images:
+                                self.console.print("[dim]No image found on clipboard.[/]")
+                            user_input = user_input.replace("!img", "").strip()
+                        self._pending_files = attached_files
+                        self._pending_images = attached_images
+                        if user_input.strip():
+                            self._chat(user_input)
+                except Exception as e:
+                    if _logger:
+                        _logger.error("unhandled error processing input", exc_info=True)
+                    self.console.print(f"\n[red]✗ Something went wrong:[/] {e}")
+                    self.console.print("[dim]Returning to the prompt — your session is intact. See ~/.kodiqa/error.log for details.[/]")
         except KeyboardInterrupt:
             self._quit()
 

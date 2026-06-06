@@ -108,3 +108,27 @@ class TestFailoverCommand:
 
     def test_registered_command(self):
         assert "/failover" in Kodiqa._COMMAND_HANDLERS
+
+
+class TestStreamInterruptedInit:
+    """Regression: a request that fails BEFORE _start_stream_interrupt runs (e.g. a
+    404/401) used to hit `if self._stream_interrupted` in failover and AttributeError,
+    crashing the whole REPL. __init__ must initialize the attribute."""
+
+    def test_fresh_instance_has_stream_interrupted(self, monkeypatch):
+        # Avoid touching the user's real Ollama/network during construction.
+        monkeypatch.setattr(kodiqa, "save_default_config", lambda: None)
+        k = Kodiqa()
+        assert k._stream_interrupted is False
+
+    def test_early_failure_does_not_raise(self):
+        """Primary stream returns None before any interrupt monitor ran; with the
+        attribute defaulted, failover resolves cleanly instead of AttributeError."""
+        k = MagicMock()
+        k.failover_enabled = False
+        k.model = "qwen3-coder"
+        k._stream_interrupted = False  # the default __init__ now guarantees
+        k._build_openai_messages.return_value = []
+        k._call_openai_compat_stream.return_value = None  # 404 → None, no monitor started
+        resp, kind, prov = Kodiqa._stream_native_with_failover(k, "openai", "qwen", "SYS")
+        assert resp is None and kind == "openai" and prov == "qwen"

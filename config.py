@@ -283,6 +283,9 @@ PERSONAS = {
 # ── Changelog ──
 # Canonical changelog is CHANGELOG.md — this list powers the /changelog command
 CHANGELOG = [
+    {"version": "v3.16.2", "date": "2026-06-06", "changes": [
+        "Fix: a failed request (e.g. 404 for an unavailable model) no longer crashes the CLI — _stream_interrupted is initialized at startup, and the REPL now catches any per-input error, logs it, and returns to the prompt instead of exiting.",
+    ]},
     {"version": "v3.16.1", "date": "2026-06-06", "changes": [
         "Editor bridge: stable token via KODIQA_BRIDGE_TOKEN; demo GIF added to README + landing page.",
     ]},
