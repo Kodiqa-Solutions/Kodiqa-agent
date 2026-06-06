@@ -4,6 +4,16 @@ All notable changes to Kodiqa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.3.8] - 2026-06-06
+
+### Fixed
+- Model discovery cache now invalidated on API key/region change (`/key`) — `/models` re-fetches live instead of serving a stale 10-minute cache, so newly-available provider models appear immediately
+- Ollama update check no longer reports false "updated!" — compares model digest before/after `ollama pull` instead of matching an "up to date" string modern Ollama never prints (it prints "success" either way)
+
+### Changed
+- New-models list relabeled to "Top N new models available (most popular on ollama.com/library)" so the count isn't mistaken for the full catalog
+- Raised the new-models display cap from 20 to 100
+
 ## [3.3.4] - 2026-03-05
 
 ### Fixed

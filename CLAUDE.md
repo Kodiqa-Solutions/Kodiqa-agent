@@ -154,15 +154,15 @@ def _dispatch_chat(self, user_msg):
 
 ### Auto Model Discovery
 - `_fetch_api_models()` fetches live model lists from all API providers with keys set
-- `_fetch_ollama_library()` scrapes ollama.com/library for available models (name, desc, pulls)
-- Cached for 10 minutes to avoid repeated API calls
+- `_fetch_ollama_library()` scrapes ollama.com/library for available models (name, desc, pulls), returns top 100 by pull count not already installed
+- Cached for 10 minutes to avoid repeated API calls; `_invalidate_model_cache()` resets the cache on any `/key` change or Qwen region switch so `/models` re-fetches immediately
 - New models appear automatically in `/model` picker and `/models` list
 - Live models shown as "(live)" — usable by full model ID
 
 ### Ollama Lifecycle (kodiqa.py)
 - `_ensure_ollama()` — starts Ollama if not running, tracks `_ollama_started_by_us`
 - `_stop_ollama()` — stops only if we started it
-- `_check_updates()` — checks installed models for updates, fetches available models from ollama.com
+- `_check_updates()` — checks installed models for updates (compares model digest before/after `ollama pull` to detect real updates, since `ollama pull` prints "success" even when up to date), then fetches top 100 available models from ollama.com
 - Always starts Ollama on launch + checks updates
 - Stops Ollama when switching to cloud model
 - Restarts + checks updates when switching back to local model
@@ -190,7 +190,7 @@ def _dispatch_chat(self, user_msg):
 - `bin/kodiqa` — shell script that runs venv Python directly
 - `pyproject.toml` — pip-installable package with `kodiqa` entry point
 - Install: `pip install kodiqa` (PyPI) or `pip install -e .` (editable)
-- Current version: v3.3.4 (AGPL-3.0)
+- Current version: v3.3.8 (AGPL-3.0)
 - PyPI: https://pypi.org/project/kodiqa/
 - Landing page: https://kodiqa-solutions.github.io/Kodiqa-agent/ (GitHub Pages, `docs/index.html`)
 
@@ -379,7 +379,7 @@ source ~/LLMS/kodiqa/venv/bin/activate && pytest -v
 - Python 3.9+, rich, beautifulsoup4, requests, prompt_toolkit, pytest (dev)
 - Ollama installed at `/Applications/Ollama.app`
 - Virtual environment at `./venv/`
-- Current version: v3.3.4 (AGPL-3.0)
+- Current version: v3.3.8 (AGPL-3.0)
 
 ### Adding a New Tool
 1. Add the handler function `do_<name>()` in `actions.py`
