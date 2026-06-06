@@ -395,6 +395,11 @@ class KodiqaCompleter(Completer):
                         for a in all_aliases:
                             if a.startswith(word):
                                 yield Completion(a, start_position=-len(word))
+                    elif cmd in ("/delete", "/rm"):
+                        installed = self.agent._installed_ollama_models() or []
+                        for name, _ in installed:
+                            if name.startswith(word):
+                                yield Completion(name, start_position=-len(word))
                     elif cmd in ("/mode",):
                         for m in ("default", "relaxed", "auto"):
                             if m.startswith(word):
@@ -596,7 +601,7 @@ class Kodiqa:
     # ── Tab Completion ──
 
     _SLASH_COMMANDS = [
-        "/model", "/models", "/multi", "/single", "/scan", "/clear", "/compact",
+        "/model", "/models", "/pull", "/delete", "/rm", "/multi", "/single", "/scan", "/clear", "/compact",
         "/memories", "/forget", "/context", "/key", "/tokens", "/config",
         "/export", "/checkpoint", "/restore", "/env", "/verbose", "/mode",
         "/plan", "/accept", "/search", "/cd", "/branch", "/mcp",
@@ -1494,6 +1499,8 @@ class Kodiqa:
                 "[bold]/multi <models>[/] - Multi-model mode (e.g. /multi coder qwen reason)\n"
                 "[bold]/single[/]        - Back to single model mode\n"
                 "[bold]/models[/]       - List all available models\n"
+                "[bold]/pull <model>[/]  - Download an Ollama model\n"
+                "[bold]/delete[/] [model] - Delete local Ollama model(s) (interactive if no arg)\n"
                 "[bold]/scan[/] [path]   - Scan project into context\n"
                 "[bold]/clear[/]         - Clear conversation\n"
                 "[bold]/memories[/]      - Show stored memories\n"
@@ -1710,6 +1717,10 @@ class Kodiqa:
             self.console.print(f"Single model mode: [cyan]{self.model}[/]")
         elif command == "/models":
             self._list_models()
+        elif command in ("/delete", "/rm"):
+            self._delete_model(arg)
+        elif command == "/pull":
+            self._pull_model(arg)
         elif command == "/clear":
             self.history = []
             self._clear_session()
@@ -2563,6 +2574,111 @@ class Kodiqa:
                 self.console.print(f"Switched to [cyan]{self.model}[/] ({provider_str})")
             else:
                 self.console.print(f"[dim]Invalid choice.[/]")
+
+    def _installed_ollama_models(self):
+        """Return [(name, size_str), ...] for locally installed Ollama models."""
+        try:
+            resp = requests.get(f"{OLLAMA_URL}/api/tags", timeout=5)
+            resp.raise_for_status()
+            out = []
+            for m in resp.json().get("models", []):
+                size = m.get("size", 0)
+                size_str = f"{size / 1e9:.1f}GB" if size > 1e9 else f"{size / 1e6:.0f}MB"
+                out.append((m["name"], size_str))
+            return out
+        except Exception:
+            return None
+
+    def _delete_model(self, arg):
+        """Delete one or more locally downloaded Ollama models (frees disk)."""
+        import subprocess
+        models = self._installed_ollama_models()
+        if models is None:
+            self.console.print("[red]Can't reach Ollama (not running?)[/]")
+            return
+        if not models:
+            self.console.print("[yellow]No local models installed.[/]")
+            return
+
+        # Resolve targets: explicit arg(s), or interactive pick.
+        targets = []
+        if arg:
+            wanted = arg.replace(",", " ").split()
+            for w in wanted:
+                match = next((n for n, _ in models if n == w), None) \
+                    or next((n for n, _ in models if w.lower() in n.lower()), None)
+                if match:
+                    targets.append(match)
+                else:
+                    self.console.print(f"[yellow]No installed model matches '{w}'.[/]")
+        else:
+            self.console.print("[bold]Local models:[/]")
+            for i, (name, size_str) in enumerate(models, 1):
+                marker = " [cyan]◀ (current)[/]" if name == self.model else ""
+                self.console.print(f"  [cyan bold]{i}.[/] [cyan]{name}[/] [dim]({size_str})[/]{marker}")
+            try:
+                answer = Prompt.ask("\n[bold red]Delete which?[/] [dim](numbers, 'all', or 'cancel')[/]", default="cancel")
+            except (EOFError, KeyboardInterrupt):
+                return
+            answer = answer.strip().lower()
+            if answer in ("cancel", "skip", ""):
+                return
+            if answer == "all":
+                targets = [n for n, _ in models]
+            else:
+                for part in answer.replace(",", " ").split():
+                    if part.isdigit() and 1 <= int(part) <= len(models):
+                        targets.append(models[int(part) - 1][0])
+
+        targets = list(dict.fromkeys(targets))  # dedupe, keep order
+        if not targets:
+            return
+
+        # Confirm — deletion is destructive and irreversible (must re-download).
+        self.console.print(f"\n[yellow]Will delete:[/] {', '.join(targets)}")
+        try:
+            confirm = Prompt.ask("[bold red]Confirm delete?[/]", choices=["y", "n"], default="n")
+        except (EOFError, KeyboardInterrupt):
+            return
+        if confirm != "y":
+            self.console.print("[dim]Cancelled.[/]")
+            return
+
+        for name in targets:
+            try:
+                with Status(f"  [dim]Deleting {name}...[/]", console=self.console, spinner="dots"):
+                    result = subprocess.run([OLLAMA_BIN, "rm", name], capture_output=True, text=True, timeout=30)
+                if result.returncode == 0:
+                    self.console.print(f"  [green]●[/] Deleted [cyan]{name}[/]")
+                    self._invalidate_model_cache()
+                    if name == self.model:
+                        self.console.print(f"  [yellow]Note: {name} was the active model. Use /model to switch.[/]")
+                else:
+                    self.console.print(f"  [red]●[/] Failed to delete {name}: {(result.stderr or '').strip()[:100]}")
+            except subprocess.TimeoutExpired:
+                self.console.print(f"  [red]●[/] Timeout deleting {name}")
+            except Exception as e:
+                self.console.print(f"  [red]●[/] Error: {e}")
+
+    def _pull_model(self, arg):
+        """Pull (download) an Ollama model by name on demand."""
+        import subprocess
+        if not arg:
+            self.console.print("[yellow]Usage: /pull <model>[/] [dim](e.g. /pull llama3.2)[/]")
+            return
+        for name in arg.replace(",", " ").split():
+            self.console.print(f"\n  [yellow]●[/] Pulling [cyan]{name}[/]...")
+            try:
+                result = subprocess.run([OLLAMA_BIN, "pull", name], capture_output=True, text=True, timeout=600)
+                if result.returncode == 0:
+                    self.console.print(f"  [green]●[/] [cyan]{name}[/] installed!")
+                    self._invalidate_model_cache()
+                else:
+                    self.console.print(f"  [red]●[/] Failed to pull {name}: {(result.stderr or '').strip()[:120]}")
+            except subprocess.TimeoutExpired:
+                self.console.print(f"  [red]●[/] Timeout pulling {name}")
+            except Exception as e:
+                self.console.print(f"  [red]●[/] Error: {e}")
 
     def _scan_project(self, path):
         if not os.path.isdir(path):

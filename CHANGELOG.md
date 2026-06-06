@@ -4,6 +4,12 @@ All notable changes to Kodiqa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.3.9] - 2026-06-06
+
+### Added
+- `/pull <model>` — download an Ollama model on demand (previously only possible at startup)
+- `/delete [model]` (alias `/rm`) — delete locally downloaded Ollama models to free disk; interactive picker with sizes when no arg, exact/fuzzy match or `all` otherwise, always confirms before removing, warns when deleting the active model, tab-completes installed model names
+
 ## [3.3.8] - 2026-06-06
 
 ### Fixed
