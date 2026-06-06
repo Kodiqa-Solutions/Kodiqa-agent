@@ -1328,8 +1328,8 @@ class Kodiqa:
             if not already_have:
                 models.append((name, desc, pulls))
 
-        # Return top 20 by popularity (page is already sorted by pulls)
-        return models[:20]
+        # Return top 100 by popularity (page is already sorted by pulls)
+        return models[:100]
 
     def _stop_ollama(self):
         """Stop Ollama if we started it."""
@@ -1366,19 +1366,32 @@ class Kodiqa:
             updated_count = 0
             for model_name in list(installed.keys()):
                 try:
+                    # Record the model's digest before pulling so we can tell whether
+                    # anything actually changed ("ollama pull" prints "success" either way).
+                    old_digest = installed[model_name].get("digest")
                     with Status(f"  [dim]Checking {model_name}...[/]", console=self.console, spinner="dots"):
                         result = subprocess.run(
                             [OLLAMA_BIN, "pull", model_name],
                             capture_output=True, text=True, timeout=120,
                         )
-                    output = result.stdout + result.stderr
-                    if "up to date" in output.lower():
-                        self.console.print(f"  [green]●[/] {model_name} [dim]up to date[/]")
-                    elif result.returncode == 0:
+                    if result.returncode != 0:
+                        self.console.print(f"  [yellow]●[/] {model_name} [dim]check failed[/]")
+                        continue
+                    # Compare digest after the pull to detect a real update.
+                    new_digest = old_digest
+                    try:
+                        tags = requests.get(f"{OLLAMA_URL}/api/tags", timeout=5).json().get("models", [])
+                        for m in tags:
+                            if m["name"] == model_name:
+                                new_digest = m.get("digest")
+                                break
+                    except Exception:
+                        pass
+                    if old_digest and new_digest and new_digest != old_digest:
                         self.console.print(f"  [green]●[/] {model_name} [bold green]updated![/]")
                         updated_count += 1
                     else:
-                        self.console.print(f"  [yellow]●[/] {model_name} [dim]check failed[/]")
+                        self.console.print(f"  [green]●[/] {model_name} [dim]up to date[/]")
                 except subprocess.TimeoutExpired:
                     self.console.print(f"  [yellow]●[/] {model_name} [dim]timeout[/]")
                 except Exception:
@@ -1397,7 +1410,7 @@ class Kodiqa:
             return
 
         # Show new models available
-        self.console.print(f"\n[bold yellow]New models available ({len(new_models)}):[/]")
+        self.console.print(f"\n[bold yellow]Top {len(new_models)} new models available[/] [dim](most popular on ollama.com/library)[/]:")
         for i, (model, desc, pulls) in enumerate(new_models, 1):
             pulls_str = f" [dim]({pulls} pulls)[/]" if pulls else ""
             self.console.print(f"  [cyan bold]{i}.[/] [cyan]{model}[/] — {desc[:70]}{pulls_str}")
@@ -2336,6 +2349,7 @@ class Kodiqa:
             if key.lower() == "remove":
                 self.api_keys[provider] = ""
                 self.settings.pop(prov["key_setting"], None)
+                self._invalidate_model_cache()
                 if self._get_provider_for_model(self.model) == provider:
                     self.model = DEFAULT_MODEL
                     self.settings["default_model"] = DEFAULT_MODEL
@@ -2344,6 +2358,7 @@ class Kodiqa:
             elif not prov["key_prefix"] or key.startswith(prov["key_prefix"]):
                 self.api_keys[provider] = key
                 self.settings[prov["key_setting"]] = key
+                self._invalidate_model_cache()
                 if provider == "qwen":
                     self.qwen_key = key
                     self._configure_qwen_endpoint(key)
@@ -2389,7 +2404,13 @@ class Kodiqa:
         models_url = url.replace("/chat/completions", "/models")
         OPENAI_COMPAT_PROVIDERS["qwen"]["models_url"] = models_url
         self.settings["qwen_region"] = region_key
+        self._invalidate_model_cache()
         self.console.print(f"[dim]Endpoint: {url}[/]")
+
+    def _invalidate_model_cache(self):
+        """Force the next _fetch_api_models() to re-fetch (e.g. after a key/region change)."""
+        if hasattr(self, "_cached_api_models"):
+            self._cached_api_models["_ts"] = 0
 
     def _fetch_api_models(self):
         """Fetch live model lists from Claude and all OpenAI-compat APIs. Caches results."""
