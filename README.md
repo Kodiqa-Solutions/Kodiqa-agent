@@ -265,16 +265,27 @@ Navigate with arrow keys, view diffs, accept/reject individually or in bulk.
 
 ## MCP Server Support
 
-Connect external tool servers via the Model Context Protocol:
+Connect external tool servers via the Model Context Protocol — **local or remote**:
 
 ```
-/mcp add mytools npx my-mcp-server     # connect a server
-/mcp list                                # show connected servers + tools (and lazy mode)
+# Local (stdio) server — a command Kodiqa runs
+/mcp add fs npx -y @modelcontextprotocol/server-filesystem ~/projects
+
+# Remote (HTTP) server — a hosted URL, with optional auth
+/mcp add linear https://mcp.linear.app/mcp --bearer env:LINEAR_TOKEN
+/mcp add api https://example.com/mcp --header "X-Api-Key:abc123"
+
+/mcp list                                # show servers + transport ([http]/[stdio]) + lazy mode
 /mcp remove mytools                      # disconnect
 /mcp lazy [on|off]                       # toggle lazy tool loading (default: on)
 ```
 
-MCP tools are automatically available to the AI alongside built-in tools.
+Remote servers use the **Streamable HTTP** transport. Auth values support `env:VAR` and
+`file:PATH` so tokens aren't typed inline. *(Interactive OAuth login is coming next; today's
+release covers the token/header auth most hosted servers use.)*
+
+MCP tools are automatically available to the AI alongside built-in tools, and work with
+lazy mode (discovered on demand).
 
 ### ⚡ Lazy MCP tools — save up to 94% of tool-schema tokens
 

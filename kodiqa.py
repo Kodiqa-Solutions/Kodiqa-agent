@@ -702,7 +702,7 @@ class Kodiqa:
         ("/embed", (), "_cmd_embed", "Project & context", "[path]", "Index files for RAG search"),
         ("/rag", (), "_cmd_rag", "Project & context", "<query>", "RAG search + AI answer"),
 
-        ("/mcp", (), "_cmd_mcp", "Tools & UI", "", "Manage MCP tool servers"),
+        ("/mcp", (), "_cmd_mcp", "Tools & UI", "", "Manage MCP tool servers (local + remote/HTTP)"),
         ("/search", (), "_cmd_search", "Tools & UI", "", "Switch search engine"),
         ("/config", (), "_cmd_config", "Tools & UI", "", "Show/reload config"),
         ("/env", (), "_cmd_env", "Tools & UI", "", "Show shell environment"),
@@ -4259,19 +4259,34 @@ class Kodiqa:
 
         if subcmd == "add":
             if len(parts) < 3:
-                self.console.print("[dim]Usage: /mcp add <name> <command> [args...][/]")
+                self.console.print("[dim]Usage:[/]")
+                self.console.print("[dim]  /mcp add <name> <command> [args...]        — local (stdio) server[/]")
+                self.console.print("[dim]  /mcp add <name> <https://url> [--bearer T] [--header K:V]  — remote (HTTP)[/]")
+                self.console.print("[dim]  token values support env:VAR and file:PATH[/]")
                 return
+            import shlex
             name = parts[1]
-            cmd_parts = parts[2].split()
-            command = cmd_parts[0]
-            cmd_args = cmd_parts[1:] if len(cmd_parts) > 1 else []
+            try:
+                tokens = shlex.split(parts[2])
+            except ValueError:
+                tokens = parts[2].split()
+            target = tokens[0]
+            is_remote = target.startswith("http://") or target.startswith("https://")
             with Status(f"  [dim]Connecting to MCP server '{name}'...[/]", console=self.console, spinner="dots"):
-                tools = self.mcp.add_server(name, command, cmd_args)
+                if is_remote:
+                    headers = self._parse_mcp_auth(tokens[1:])
+                    tools = self.mcp.add_http_server(name, target, headers)
+                else:
+                    tools = self.mcp.add_server(name, target, tokens[1:])
             if tools is not None:
                 tool_names = [t["name"] for t in tools]
-                self.console.print(f"  [green]Connected: {name}[/] ({len(tools)} tools: {', '.join(tool_names[:5])})")
+                kind = "remote/HTTP" if is_remote else "local/stdio"
+                self.console.print(f"  [green]Connected: {name}[/] [dim]({kind})[/] ({len(tools)} tools: {', '.join(tool_names[:5])})")
             else:
                 self.console.print(f"  [red]Failed to connect to '{name}'[/]")
+                if is_remote:
+                    self.console.print("  [dim]If the server needs auth, pass --bearer <token> or --header K:V. "
+                                       "OAuth login is coming in a later release.[/]")
         elif subcmd == "remove":
             if len(parts) < 2:
                 self.console.print("[dim]Usage: /mcp remove <name>[/]")
@@ -4282,7 +4297,41 @@ class Kodiqa:
             else:
                 self.console.print(f"  [red]Server '{name}' not found.[/]")
         else:
-            self.console.print("[dim]Usage: /mcp add <name> <command> | /mcp remove <name> | /mcp list | /mcp lazy [on|off][/]")
+            self.console.print("[dim]Usage: /mcp add <name> <command|url> [auth] | /mcp remove <name> | /mcp list | /mcp lazy [on|off][/]")
+
+    def _parse_mcp_auth(self, tokens):
+        """Parse remote-MCP auth flags into a request-headers dict.
+        Supports: --bearer <tok> / --token <tok>, --header K:V (repeatable).
+        Values support env:VAR and file:PATH so secrets aren't typed inline."""
+        headers = {}
+        i = 0
+        while i < len(tokens):
+            t = tokens[i]
+            if t in ("--bearer", "--token") and i + 1 < len(tokens):
+                headers["Authorization"] = "Bearer " + self._resolve_secret(tokens[i + 1])
+                i += 2
+            elif t == "--header" and i + 1 < len(tokens):
+                kv = tokens[i + 1]
+                if ":" in kv:
+                    k, v = kv.split(":", 1)
+                    headers[k.strip()] = self._resolve_secret(v.strip())
+                i += 2
+            else:
+                i += 1
+        return headers
+
+    def _resolve_secret(self, val):
+        """Resolve an env:VAR / file:PATH reference, else return the literal value."""
+        if val.startswith("env:"):
+            return os.environ.get(val[4:], "")
+        if val.startswith("file:"):
+            try:
+                with open(os.path.expanduser(val[5:])) as f:
+                    return f.read().strip()
+            except Exception:
+                _logger.debug("ignored error in _resolve_secret", exc_info=True)
+                return ""
+        return val
 
     def _load_kodiqaignore(self):
         """Load .kodiqaignore from cwd and merge into skip sets."""

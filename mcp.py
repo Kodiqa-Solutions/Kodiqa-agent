@@ -5,7 +5,29 @@ import subprocess
 import threading
 import logging
 
+import requests
+
 _logger = logging.getLogger("kodiqa")
+
+
+def _claude_tool_schemas(server_name, tools):
+    """Convert raw MCP tool defs to Claude-compatible tool schemas (shared by all transports)."""
+    return [{
+        "name": f"mcp_{server_name}_{t['name']}",
+        "description": f"[MCP:{server_name}] {t.get('description', t['name'])}",
+        "input_schema": t.get("inputSchema", {"type": "object", "properties": {}}),
+    } for t in tools]
+
+
+def _extract_tool_result(resp):
+    """Flatten a JSON-RPC tools/call response into text (shared by all transports)."""
+    if resp and "result" in resp:
+        content = resp["result"].get("content", [])
+        texts = [b.get("text", "") for b in content if b.get("type") == "text"]
+        return "\n".join(texts) if texts else str(resp["result"])
+    if resp and "error" in resp:
+        return f"MCP error: {resp['error'].get('message', str(resp['error']))}"
+    return "MCP: no response"
 
 
 class MCPServer:
@@ -57,16 +79,7 @@ class MCPServer:
             "name": tool_name,
             "arguments": arguments,
         }})
-        if resp and "result" in resp:
-            content = resp["result"].get("content", [])
-            texts = []
-            for block in content:
-                if block.get("type") == "text":
-                    texts.append(block.get("text", ""))
-            return "\n".join(texts) if texts else str(resp["result"])
-        if resp and "error" in resp:
-            return f"MCP error: {resp['error'].get('message', str(resp['error']))}"
-        return "MCP: no response"
+        return _extract_tool_result(resp)
 
     def _readline_timeout(self, timeout=30):
         """Read one line from stdout, returning None if it takes longer than `timeout`
@@ -135,14 +148,131 @@ class MCPServer:
 
     def get_tool_schemas(self):
         """Convert MCP tools to Claude-compatible tool schemas."""
-        schemas = []
-        for tool in self.tools:
-            schemas.append({
-                "name": f"mcp_{self.name}_{tool['name']}",
-                "description": f"[MCP:{self.name}] {tool.get('description', tool['name'])}",
-                "input_schema": tool.get("inputSchema", {"type": "object", "properties": {}}),
+        return _claude_tool_schemas(self.name, self.tools)
+
+
+class MCPHttpServer:
+    """A connection to a remote MCP server over Streamable HTTP transport
+    (the current MCP standard). Mirrors MCPServer's interface (start / call_tool /
+    get_tool_schemas / stop / .tools / .name) so MCPManager treats both the same.
+
+    Auth is via static request headers (e.g. {"Authorization": "Bearer …"}); the
+    interactive OAuth flow plugs in here by populating those headers (Phase 2)."""
+
+    def __init__(self, name, url, headers=None):
+        self.name = name
+        self.url = url
+        self.headers = headers or {}
+        self.tools = []
+        self.session_id = None
+        self._id = 0
+        self._lock = threading.Lock()
+
+    def start(self):
+        try:
+            resp = self._request("initialize", {
+                "protocolVersion": "2025-03-26",
+                "capabilities": {},
+                "clientInfo": {"name": "kodiqa", "version": "1.0"},
             })
-        return schemas
+            if not resp or "result" not in resp:
+                if resp and "error" in resp:
+                    _logger.warning(f"MCP '{self.name}' initialize error: {resp['error']}")
+                return False
+            self._notify("notifications/initialized")
+            tools_resp = self._request("tools/list", {})
+            if tools_resp and "result" in tools_resp:
+                self.tools = tools_resp["result"].get("tools", [])
+            return True
+        except Exception as e:
+            _logger.warning(f"MCP '{self.name}' (HTTP) failed to start: {e}")
+            return False
+
+    def call_tool(self, tool_name, arguments):
+        resp = self._request("tools/call", {"name": tool_name, "arguments": arguments})
+        return _extract_tool_result(resp)
+
+    def get_tool_schemas(self):
+        return _claude_tool_schemas(self.name, self.tools)
+
+    def _headers(self):
+        h = {"Content-Type": "application/json",
+             "Accept": "application/json, text/event-stream"}
+        h.update(self.headers)
+        if self.session_id:
+            h["Mcp-Session-Id"] = self.session_id
+        return h
+
+    def _request(self, method, params=None):
+        """Send a JSON-RPC request and return the parsed response (or None)."""
+        with self._lock:
+            self._id += 1
+            msg = {"jsonrpc": "2.0", "id": self._id, "method": method, "params": params or {}}
+            return self._post(msg, want_id=self._id)
+
+    def _notify(self, method, params=None):
+        """Send a JSON-RPC notification (no id, no response expected)."""
+        try:
+            self._post({"jsonrpc": "2.0", "method": method, "params": params or {}}, want_id=None)
+        except Exception:
+            _logger.debug("ignored error in _notify", exc_info=True)
+
+    def _post(self, message, want_id):
+        try:
+            resp = requests.post(self.url, json=message, headers=self._headers(),
+                                 timeout=60, stream=True)
+        except requests.RequestException as e:
+            _logger.warning(f"MCP '{self.name}' (HTTP) request error: {e}")
+            return None
+        # The server assigns a session id on initialize; reuse it on every later call.
+        sid = resp.headers.get("Mcp-Session-Id")
+        if sid:
+            self.session_id = sid
+        try:
+            if resp.status_code == 202:   # accepted (notifications) — no body
+                return None
+            if resp.status_code >= 400:
+                _logger.warning(f"MCP '{self.name}' (HTTP) {resp.status_code}: {resp.text[:200]}")
+                return {"error": {"message": f"HTTP {resp.status_code}"}}
+            ctype = resp.headers.get("Content-Type", "")
+            if "text/event-stream" in ctype:
+                return self._read_sse(resp, want_id)
+            return resp.json()
+        finally:
+            resp.close()
+
+    def _read_sse(self, resp, want_id):
+        """Read a Streamable-HTTP SSE response and return the JSON-RPC message whose
+        id matches `want_id` (servers may interleave notifications/other messages)."""
+        data_lines = []
+        last = None
+        for raw in resp.iter_lines(decode_unicode=True):
+            if raw is None:
+                continue
+            if raw == "":  # blank line dispatches the accumulated event
+                if data_lines:
+                    try:
+                        msg = json.loads("\n".join(data_lines))
+                        last = msg
+                        if isinstance(msg, dict) and (want_id is None or msg.get("id") == want_id):
+                            return msg
+                    except Exception:
+                        _logger.debug("ignored error in _read_sse", exc_info=True)
+                    data_lines = []
+                continue
+            if raw.startswith("data:"):
+                data_lines.append(raw[5:].lstrip())
+            # event:/id:/retry: lines are ignored
+        return last
+
+    def stop(self):
+        """Best-effort: ask the server to end the session."""
+        if not self.session_id:
+            return
+        try:
+            requests.delete(self.url, headers=self._headers(), timeout=10).close()
+        except Exception:
+            _logger.debug("ignored error in stop", exc_info=True)
 
 
 class MCPManager:
@@ -152,10 +282,20 @@ class MCPManager:
         self.servers = {}  # {name: MCPServer}
 
     def add_server(self, name, command, args=None, env=None):
-        """Add and start an MCP server."""
+        """Add and start a local (stdio) MCP server."""
         if name in self.servers:
             self.servers[name].stop()
         server = MCPServer(name, command, args, env)
+        if server.start():
+            self.servers[name] = server
+            return server.tools
+        return None
+
+    def add_http_server(self, name, url, headers=None):
+        """Add and start a remote MCP server over Streamable HTTP (optionally authed)."""
+        if name in self.servers:
+            self.servers[name].stop()
+        server = MCPHttpServer(name, url, headers)
         if server.start():
             self.servers[name] = server
             return server.tools
@@ -220,7 +360,8 @@ class MCPManager:
         lines = []
         for name, server in self.servers.items():
             tool_names = [t["name"] for t in server.tools]
-            lines.append(f"  {name}: {len(server.tools)} tools ({', '.join(tool_names[:5])})")
+            kind = "http" if isinstance(server, MCPHttpServer) else "stdio"
+            lines.append(f"  {name} [{kind}]: {len(server.tools)} tools ({', '.join(tool_names[:5])})")
         return "\n".join(lines)
 
     def stop_all(self):

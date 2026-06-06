@@ -4,6 +4,28 @@ All notable changes to Kodiqa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.9.0] - 2026-06-06
+
+Remote MCP servers — connect hosted MCP endpoints, not just local ones.
+
+### Added
+- **Remote MCP over Streamable HTTP** (the current MCP transport standard). Point `/mcp add` at a URL instead of a command:
+  ```
+  /mcp add linear https://mcp.linear.app/mcp --bearer env:LINEAR_TOKEN
+  /mcp add api https://example.com/mcp --header "X-Api-Key:abc123"
+  ```
+  Handles JSON and SSE responses and reuses the server's `Mcp-Session-Id` across calls.
+- **Token / header auth** for remote servers: `--bearer <token>` / `--token <token>` (sets `Authorization: Bearer`) and repeatable `--header K:V`. Values support `env:VAR` and `file:PATH` so secrets aren't typed inline or stored in history.
+- `/mcp list` now shows each server's transport (`[http]` / `[stdio]`).
+
+Remote tools work exactly like local ones — including **lazy mode** (discovered on demand via `mcp_search`).
+
+### Notes
+- Interactive **OAuth login** (browser PKCE flow) is the next increment; this release covers the static-token auth that most hosted MCP servers use today.
+
+### Tests
+- `test_mcp_http.py` — a real in-process HTTP MCP server (start, tool call, session reuse, manager routing) plus SSE-path, error, and auth-parsing tests. 397 total.
+
 ## [3.8.1] - 2026-06-06
 
 ### Fixed
