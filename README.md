@@ -90,6 +90,7 @@ kodiqa
 - **26 tools** — file ops, git, search, web, memory, clipboard, multi-edit, undo, diff apply
 - **7 API providers** — Ollama (local/free), Claude, OpenAI, DeepSeek, Groq, Mistral, Qwen
 - **MCP server support** — connect external tool servers via Model Context Protocol
+- **Lazy MCP tools** — large MCP servers are discovered on demand (`mcp_search` / `mcp_call`) instead of injecting every tool schema each turn — ~94% fewer tool-schema tokens (`/mcp lazy`)
 - **Auto model discovery** — new Claude/Qwen models appear automatically from APIs
 - **Interactive pickers** — `/model` and `/key` show numbered menus, navigate with arrows
 - **Tab autocomplete** — slash commands, model names, file paths (prompt_toolkit)

@@ -188,6 +188,31 @@ class MCPManager:
             tools.extend(server.get_tool_schemas())
         return tools
 
+    def tool_count(self):
+        """Total number of tools across all connected servers."""
+        return sum(len(s.tools) for s in self.servers.values())
+
+    def search_tools(self, query=""):
+        """Lazy-discovery: return [{name, description}] for matching tools WITHOUT
+        their (token-heavy) input schemas. `query` is a case-insensitive substring
+        match over the full name + description; empty returns everything."""
+        q = (query or "").lower().strip()
+        out = []
+        for schema in self.get_all_tools():
+            name = schema["name"]
+            desc = schema.get("description", "")
+            if not q or q in name.lower() or q in desc.lower():
+                out.append({"name": name, "description": desc})
+        return out
+
+    def get_tool_schema(self, full_name):
+        """Return the full Claude tool schema (incl. input_schema) for one tool,
+        or None. Used to fetch a single schema on demand instead of all of them."""
+        for schema in self.get_all_tools():
+            if schema["name"] == full_name:
+                return schema
+        return None
+
     def list_servers(self):
         """List connected servers with their tools."""
         if not self.servers:

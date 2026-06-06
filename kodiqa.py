@@ -592,6 +592,12 @@ class Kodiqa:
         self._branches = {}  # {name: {"history": [...], "model": ...}}
         # MCP server manager
         self.mcp = MCPManager()
+        # Lazy MCP tools: expose 3 meta-tools (search/schema/call) instead of injecting
+        # every MCP tool's schema into every request — saves the per-turn token cost of
+        # large MCP servers. Usage counts rank mcp_search results.
+        self.mcp_lazy = self.settings.get("mcp_lazy", True)
+        self._mcp_usage_file = os.path.join(KODIQA_DIR, "mcp_usage.json")
+        self._mcp_usage = self._load_mcp_usage()
         # Best-effort cleanup of spawned child processes (MCP/LSP/Ollama) even on
         # crash or unexpected exit, so they aren't orphaned.
         import atexit
@@ -3036,8 +3042,12 @@ class Kodiqa:
         Shared by both native loops."""
         if self.batch_edits:
             set_batch_mode(True)
-        mcp_calls = [tc for tc in tool_calls if tc["name"].startswith("mcp_")]
-        regular_calls = [tc for tc in tool_calls if not tc["name"].startswith("mcp_")]
+        # Lazy-MCP meta-tools (mcp_search/mcp_tool_schema/mcp_call) are handled as
+        # regular tools via _execute_tool, not routed straight to the MCP manager.
+        mcp_calls = [tc for tc in tool_calls
+                     if tc["name"].startswith("mcp_") and tc["name"] not in self._MCP_META_NAMES]
+        regular_calls = [tc for tc in tool_calls
+                         if not tc["name"].startswith("mcp_") or tc["name"] in self._MCP_META_NAMES]
         results_list = []
         if len(regular_calls) > 1:
             allowed_calls, results_list = self._partition_workspace(regular_calls)
@@ -3474,17 +3484,126 @@ class Kodiqa:
 
     def _execute_tool(self, name, params):
         """Execute a tool call, routing MCP tools to MCP manager."""
+        if name in self._MCP_META_NAMES:
+            return self._mcp_meta_call(name, params)
         if name.startswith("mcp_"):
             return self.mcp.call_tool(name, params or {})
         if not self._check_workspace_boundary(name, params):
             return "Denied: file is outside the workspace directory."
         return execute_tool_call(name, params, self.memory, self._confirm)
 
+    # Names of the lazy-MCP meta-tools (treated as built-ins, not real MCP tools).
+    _MCP_META_NAMES = ("mcp_search", "mcp_tool_schema", "mcp_call")
+
     def _get_all_tools(self):
-        """Get all tools: built-in + MCP server tools."""
+        """Get all tools: built-in + MCP. In lazy mode, MCP servers contribute 3 fixed
+        meta-tools (search/schema/call) instead of every tool's schema — so the per-turn
+        token cost stays flat no matter how many MCP tools are connected."""
         tools = list(CLAUDE_TOOLS)
-        tools.extend(self.mcp.get_all_tools())
+        mcp_count = self.mcp.tool_count()
+        if self.mcp_lazy and mcp_count:
+            tools.extend(self._mcp_meta_tools(mcp_count))
+        else:
+            tools.extend(self.mcp.get_all_tools())
         return tools
+
+    def _mcp_meta_tools(self, count):
+        """The 3 on-demand MCP meta-tool schemas (descriptions name the live servers
+        so the model knows what's reachable without seeing every schema)."""
+        servers = ", ".join(self.mcp.servers.keys()) or "—"
+        return [
+            {
+                "name": "mcp_search",
+                "description": (
+                    f"Discover MCP tools on demand. {count} tool(s) from connected server(s) "
+                    f"[{servers}] are available but NOT pre-loaded to save tokens. Call this "
+                    "first to find a tool by keyword; it returns names + descriptions ranked by "
+                    "usage. Then run it with mcp_call (use mcp_tool_schema for exact arguments)."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Case-insensitive keyword to filter tools (empty = list all)."},
+                        "limit": {"type": "integer", "description": "Max results (default 30)."},
+                    },
+                },
+            },
+            {
+                "name": "mcp_tool_schema",
+                "description": "Get the full JSON input schema for one MCP tool (from mcp_search). Use only when you need exact parameter names/types before mcp_call.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"name": {"type": "string", "description": "Full tool name, e.g. mcp_<server>_<tool>."}},
+                    "required": ["name"],
+                },
+            },
+            {
+                "name": "mcp_call",
+                "description": "Execute an MCP tool by its full name with a JSON arguments object.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "Full tool name from mcp_search."},
+                        "arguments": {"type": "object", "description": "The tool's arguments."},
+                    },
+                    "required": ["name"],
+                },
+            },
+        ]
+
+    # ── Lazy-MCP meta-tool handlers + usage tracking ──
+
+    def _load_mcp_usage(self):
+        try:
+            if os.path.isfile(self._mcp_usage_file):
+                with open(self._mcp_usage_file) as f:
+                    return json.load(f)
+        except Exception:
+            _logger.debug("ignored error in _load_mcp_usage", exc_info=True)
+        return {}
+
+    def _save_mcp_usage(self):
+        try:
+            with open(self._mcp_usage_file, "w") as f:
+                json.dump(self._mcp_usage, f)
+        except Exception:
+            _logger.debug("ignored error in _save_mcp_usage", exc_info=True)
+
+    def _mcp_meta_call(self, name, params):
+        """Dispatch a lazy-MCP meta-tool. Returns the result string."""
+        params = params or {}
+        if name == "mcp_search":
+            results = self.mcp.search_tools(params.get("query", ""))
+            if not results:
+                return "No matching MCP tools." if self.mcp.tool_count() else "No MCP servers connected."
+            limit = params.get("limit") or 30
+            results.sort(key=lambda r: (-self._mcp_usage.get(r["name"], 0), r["name"]))
+            results = results[:limit]
+            lines = [f"{len(results)} MCP tool(s) — call with mcp_call:"]
+            for r in results:
+                used = self._mcp_usage.get(r["name"], 0)
+                tag = f" [used {used}x]" if used else ""
+                lines.append(f"  {r['name']} — {r['description']}{tag}")
+            return "\n".join(lines)
+        if name == "mcp_tool_schema":
+            schema = self.mcp.get_tool_schema(params.get("name", ""))
+            if not schema:
+                return f"MCP tool not found: {params.get('name', '')} (use mcp_search to find the exact name)."
+            return json.dumps(schema.get("input_schema", {}), indent=2)
+        if name == "mcp_call":
+            tool_name = params.get("name", "")
+            args = params.get("arguments", {})
+            if isinstance(args, str):  # tolerate stringified JSON (some providers/Ollama)
+                try:
+                    args = json.loads(args) if args.strip() else {}
+                except Exception:
+                    return "mcp_call: 'arguments' must be a JSON object."
+            if not tool_name:
+                return "mcp_call: 'name' is required (get it from mcp_search)."
+            self._mcp_usage[tool_name] = self._mcp_usage.get(tool_name, 0) + 1
+            self._save_mcp_usage()
+            return self.mcp.call_tool(tool_name, args)
+        return f"Unknown MCP meta-tool: {name}"
 
     def _get_openai_tools(self):
         """Convert Claude tool schemas to OpenAI function-calling format."""
@@ -4107,13 +4226,36 @@ class Kodiqa:
             self.console.print("[dim]Usage: /branch save <name> | /branch switch <name> | /branch delete <name> | /branch list[/]")
 
     def _handle_mcp(self, arg):
-        """Handle /mcp commands: add, remove, list."""
+        """Handle /mcp commands: add, remove, list, lazy."""
         if not arg or arg == "list":
             info = self.mcp.list_servers()
-            self.console.print(Panel(info, title="MCP Servers", border_style="blue"))
+            n = self.mcp.tool_count()
+            mode = "[green]ON[/]" if self.mcp_lazy else "[dim]OFF[/]"
+            if n:
+                note = (f"\n\n[dim]Lazy tools: {mode} — "
+                        + (f"{n} tools exposed on demand via mcp_search (3 schemas/turn instead of {n})."
+                           if self.mcp_lazy else
+                           f"all {n} tool schemas injected every turn.")
+                        + " Toggle with /mcp lazy[/]")
+            else:
+                note = f"\n\n[dim]Lazy tools: {mode} (toggle with /mcp lazy)[/]"
+            self.console.print(Panel(info + note, title="MCP Servers", border_style="blue"))
             return
         parts = arg.split(None, 2)
         subcmd = parts[0].lower()
+
+        if subcmd == "lazy":
+            if len(parts) > 1 and parts[1].lower() in ("on", "off"):
+                self.mcp_lazy = parts[1].lower() == "on"
+            else:
+                self.mcp_lazy = not self.mcp_lazy
+            self.settings["mcp_lazy"] = self.mcp_lazy
+            save_settings(self.settings)
+            state = "[green]ON[/]" if self.mcp_lazy else "[yellow]OFF[/]"
+            self.console.print(f"  Lazy MCP tools {state} — "
+                               + ("tools discovered on demand via mcp_search (saves tokens)."
+                                  if self.mcp_lazy else "all MCP tool schemas sent every turn."))
+            return
 
         if subcmd == "add":
             if len(parts) < 3:
@@ -4140,7 +4282,7 @@ class Kodiqa:
             else:
                 self.console.print(f"  [red]Server '{name}' not found.[/]")
         else:
-            self.console.print("[dim]Usage: /mcp add <name> <command> | /mcp remove <name> | /mcp list[/]")
+            self.console.print("[dim]Usage: /mcp add <name> <command> | /mcp remove <name> | /mcp list | /mcp lazy [on|off][/]")
 
     def _load_kodiqaignore(self):
         """Load .kodiqaignore from cwd and merge into skip sets."""

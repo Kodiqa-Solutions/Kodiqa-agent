@@ -4,6 +4,22 @@ All notable changes to Kodiqa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.8.0] - 2026-06-06
+
+Lazy MCP tools — big token savings for MCP servers (inspired by mcp2cli / Anthropic Tool Search).
+
+### Added
+- **Lazy MCP tool loading (on by default).** Instead of injecting every connected MCP tool's schema into every request, Kodiqa now exposes **3 fixed meta-tools** and lets the model discover tools on demand:
+  - `mcp_search` — find MCP tools by keyword (names + descriptions, ranked by usage); nothing pre-loaded
+  - `mcp_tool_schema` — fetch one tool's full input schema only when needed
+  - `mcp_call` — execute a tool by name
+  For a 50-tool MCP server this cuts the per-turn tool-schema cost from ~5,300 to ~310 tokens (**~94%**), and the cost stays flat no matter how many MCP tools are connected.
+- **Usage-aware ranking** — `mcp_search` orders results by how often you've called each tool (persisted in `~/.kodiqa/mcp_usage.json`).
+- **`/mcp lazy [on|off]`** — toggle the behavior (`/mcp list` shows current mode + the token trade-off). Set `mcp_lazy: false` in settings to default to the old always-inject behavior.
+
+### Tests
+- `test_mcp_lazy.py` — manager search/schema/count primitives, lazy vs. non-lazy `_get_all_tools`, meta-tool handlers (usage ranking, schema lookup, call routing, stringified args), and routing. 383 total.
+
 ## [3.7.4] - 2026-06-06
 
 Observability — clears the last item from the 2026-06-06 audit (silent error handlers).

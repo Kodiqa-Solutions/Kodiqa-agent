@@ -283,6 +283,9 @@ PERSONAS = {
 # ── Changelog ──
 # Canonical changelog is CHANGELOG.md — this list powers the /changelog command
 CHANGELOG = [
+    {"version": "v3.8.0", "date": "2026-06-06", "changes": [
+        "Lazy MCP tools (on by default): MCP servers now expose 3 meta-tools (mcp_search/mcp_tool_schema/mcp_call) for on-demand discovery instead of injecting every schema each turn — ~94% fewer tool-schema tokens for large servers. Usage-ranked. Toggle with /mcp lazy.",
+    ]},
     {"version": "v3.7.4", "date": "2026-06-06", "changes": [
         "Observability: silent error handlers now log to ~/.kodiqa/error.log (DEBUG). New --debug flag / KODIQA_DEBUG env surfaces them. No behavior change. Clears the last audit item.",
     ]},
