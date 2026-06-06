@@ -411,6 +411,10 @@ You can also use full model names: `/model qwen3:14b` or `/model claude-opus-4-6
 
 ## Editor / IDE bridge
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Kodiqa-Solutions/Kodiqa-agent/main/assets/demo-bridge.gif" alt="Kodiqa editor/IDE bridge demo — kodiqa --serve, then curl /health and /diagnostics" width="800"/>
+</p>
+
 Run Kodiqa as a small local HTTP server that your editor (VS Code, Zed, Neovim, …)
 can call:
 
@@ -419,7 +423,9 @@ kodiqa --serve            # prints the URL + an auth token
 # or, inside a session:  /serve
 ```
 
-It binds to `127.0.0.1` only and requires the printed bearer token. Protocol:
+It binds to `127.0.0.1` only and requires the printed bearer token. Set a **stable**
+token (handy for editor config) with `KODIQA_BRIDGE_TOKEN=…`, and a fixed port with
+`--port`. Protocol:
 
 | Endpoint | | |
 |----------|---|---|

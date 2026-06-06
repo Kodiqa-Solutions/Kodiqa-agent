@@ -15,6 +15,7 @@ safe to call while the CLI is in use.
 
 import json
 import logging
+import os
 import secrets
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -85,10 +86,12 @@ class _Handler(BaseHTTPRequestHandler):
 class KodiqaBridge:
     """Runs the bridge HTTP server in a daemon thread."""
 
-    def __init__(self, agent, port=0):
+    def __init__(self, agent, port=0, token=None):
         self.agent = agent
         self.port = port
-        self.token = secrets.token_urlsafe(24)
+        # Stable token via KODIQA_BRIDGE_TOKEN (handy for editor configs / demos),
+        # else a fresh random one each session.
+        self.token = token or os.environ.get("KODIQA_BRIDGE_TOKEN") or secrets.token_urlsafe(24)
         self.httpd = None
 
     def start(self):

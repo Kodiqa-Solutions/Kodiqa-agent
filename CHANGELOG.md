@@ -4,6 +4,12 @@ All notable changes to Kodiqa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.16.1] - 2026-06-06
+
+### Added
+- **Stable bridge token** — set `KODIQA_BRIDGE_TOKEN` to use a fixed auth token for the editor bridge (so you can put it in your editor config once) instead of a new random one each session.
+- A demo GIF of the editor bridge on the landing page and README.
+
 ## [3.16.0] - 2026-06-06
 
 Editor / IDE bridge — connect Kodiqa to your editor.
