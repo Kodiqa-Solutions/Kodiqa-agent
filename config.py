@@ -283,6 +283,9 @@ PERSONAS = {
 # ── Changelog ──
 # Canonical changelog is CHANGELOG.md — this list powers the /changelog command
 CHANGELOG = [
+    {"version": "v3.10.0", "date": "2026-06-06", "changes": [
+        "OAuth login for remote MCP servers: /mcp add <url> --oauth runs the browser (authorization-code + PKCE) flow with discovery + dynamic client registration; --oauth-client-id/--oauth-client-secret does machine-to-machine. Tokens cached + auto-refreshed.",
+    ]},
     {"version": "v3.9.0", "date": "2026-06-06", "changes": [
         "Remote MCP servers: /mcp add <url> connects hosted MCP endpoints over Streamable HTTP, with --bearer/--header auth (env:/file: secrets supported). Works with lazy mode. OAuth browser login coming next.",
     ]},

@@ -4,6 +4,27 @@ All notable changes to Kodiqa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.10.0] - 2026-06-06
+
+OAuth for remote MCP servers — completes the "Remote MCP + OAuth" work.
+
+### Added
+- **OAuth 2.1 login for remote MCP servers** (`mcp_oauth.py`). Two flows:
+  - **Interactive** (`--oauth`): server discovery → dynamic client registration → authorization-code + PKCE in your browser → token exchange. Just run:
+    ```
+    /mcp add linear https://mcp.linear.app/mcp --oauth
+    ```
+    Kodiqa opens your browser, you log in, done.
+  - **Client credentials** (machine-to-machine, no browser):
+    ```
+    /mcp add api https://example.com/mcp --oauth-client-id env:CID --oauth-client-secret env:CSEC
+    ```
+  - Optional `--scope "read write"`.
+- **Token caching + auto-refresh** — tokens are cached under `~/.kodiqa/oauth/` (0600) keyed by server URL, reused across sessions, refreshed automatically before expiry and on a `401` (the request is transparently retried once).
+
+### Tests
+- `test_mcp_oauth.py` — PKCE, discovery, dynamic registration, the localhost callback server, token exchange/refresh, the cache, both grants, a deterministic end-to-end of the interactive flow (real callback server + fake browser), and HTTP 401 refresh-and-retry. 409 total.
+
 ## [3.9.0] - 2026-06-06
 
 Remote MCP servers — connect hosted MCP endpoints, not just local ones.

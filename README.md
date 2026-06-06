@@ -275,14 +275,20 @@ Connect external tool servers via the Model Context Protocol — **local or remo
 /mcp add linear https://mcp.linear.app/mcp --bearer env:LINEAR_TOKEN
 /mcp add api https://example.com/mcp --header "X-Api-Key:abc123"
 
+# Remote with OAuth login (opens your browser)
+/mcp add linear https://mcp.linear.app/mcp --oauth
+# …or machine-to-machine (no browser)
+/mcp add api https://example.com/mcp --oauth-client-id env:CID --oauth-client-secret env:CSEC
+
 /mcp list                                # show servers + transport ([http]/[stdio]) + lazy mode
 /mcp remove mytools                      # disconnect
 /mcp lazy [on|off]                       # toggle lazy tool loading (default: on)
 ```
 
 Remote servers use the **Streamable HTTP** transport. Auth values support `env:VAR` and
-`file:PATH` so tokens aren't typed inline. *(Interactive OAuth login is coming next; today's
-release covers the token/header auth most hosted servers use.)*
+`file:PATH` so tokens aren't typed inline. **OAuth** (`--oauth`) handles discovery, dynamic
+client registration, the PKCE browser login, and automatic token refresh — tokens are cached
+under `~/.kodiqa/oauth/` and reused across sessions.
 
 MCP tools are automatically available to the AI alongside built-in tools, and work with
 lazy mode (discovered on demand).

@@ -4272,12 +4272,22 @@ class Kodiqa:
                 tokens = parts[2].split()
             target = tokens[0]
             is_remote = target.startswith("http://") or target.startswith("https://")
-            with Status(f"  [dim]Connecting to MCP server '{name}'...[/]", console=self.console, spinner="dots"):
-                if is_remote:
-                    headers = self._parse_mcp_auth(tokens[1:])
-                    tools = self.mcp.add_http_server(name, target, headers)
-                else:
-                    tools = self.mcp.add_server(name, target, tokens[1:])
+            flags = tokens[1:]
+            wants_oauth = is_remote and ("--oauth" in flags or "--oauth-client-id" in flags)
+            if wants_oauth:
+                # OAuth runs outside the Status spinner (it may open a browser / wait).
+                oauth = self._mcp_oauth_connect(target, flags)
+                if not oauth:
+                    self.console.print(f"  [red]OAuth failed for '{name}'.[/]")
+                    return
+                with Status(f"  [dim]Connecting to MCP server '{name}'...[/]", console=self.console, spinner="dots"):
+                    tools = self.mcp.add_http_server(name, target, oauth=oauth)
+            else:
+                with Status(f"  [dim]Connecting to MCP server '{name}'...[/]", console=self.console, spinner="dots"):
+                    if is_remote:
+                        tools = self.mcp.add_http_server(name, target, self._parse_mcp_auth(flags))
+                    else:
+                        tools = self.mcp.add_server(name, target, flags)
             if tools is not None:
                 tool_names = [t["name"] for t in tools]
                 kind = "remote/HTTP" if is_remote else "local/stdio"
@@ -4332,6 +4342,35 @@ class Kodiqa:
                 _logger.debug("ignored error in _resolve_secret", exc_info=True)
                 return ""
         return val
+
+    def _mcp_oauth_connect(self, url, flags):
+        """Run the OAuth flow for a remote MCP server and return a ready OAuthSession
+        (or None). Reuses cached tokens; falls back to client-credentials when an id+
+        secret are given, else the interactive authorization-code + PKCE browser flow."""
+        from mcp_oauth import OAuthSession
+
+        def _flag(name):
+            return flags[flags.index(name) + 1] if name in flags and flags.index(name) + 1 < len(flags) else None
+        scope = _flag("--scope")
+        client_id = _flag("--oauth-client-id")
+        client_secret = _flag("--oauth-client-secret")
+        if client_id:
+            client_id = self._resolve_secret(client_id)
+        if client_secret:
+            client_secret = self._resolve_secret(client_secret)
+        sess = OAuthSession(url, client_id=client_id, client_secret=client_secret, scope=scope)
+        if sess.has_token():
+            self.console.print("  [dim]Using cached OAuth token.[/]")
+            return sess
+        if client_id and client_secret:
+            self.console.print("  [dim]Authenticating (client credentials)…[/]")
+            ok = sess.authenticate_client_credentials()
+        else:
+            ok = sess.authenticate_interactive(log=lambda m: self.console.print(f"  [dim]{m}[/]"))
+        if ok:
+            self.console.print("  [green]OAuth authorized.[/]")
+            return sess
+        return None
 
     def _load_kodiqaignore(self):
         """Load .kodiqaignore from cwd and merge into skip sets."""

@@ -159,10 +159,11 @@ class MCPHttpServer:
     Auth is via static request headers (e.g. {"Authorization": "Bearer …"}); the
     interactive OAuth flow plugs in here by populating those headers (Phase 2)."""
 
-    def __init__(self, name, url, headers=None):
+    def __init__(self, name, url, headers=None, oauth=None):
         self.name = name
         self.url = url
         self.headers = headers or {}
+        self.oauth = oauth  # optional OAuthSession; supplies/refreshes the bearer token
         self.tools = []
         self.session_id = None
         self._id = 0
@@ -199,6 +200,8 @@ class MCPHttpServer:
         h = {"Content-Type": "application/json",
              "Accept": "application/json, text/event-stream"}
         h.update(self.headers)
+        if self.oauth:  # a fresh (auto-refreshed) bearer token wins over static headers
+            h.update(self.oauth.auth_header())
         if self.session_id:
             h["Mcp-Session-Id"] = self.session_id
         return h
@@ -217,7 +220,7 @@ class MCPHttpServer:
         except Exception:
             _logger.debug("ignored error in _notify", exc_info=True)
 
-    def _post(self, message, want_id):
+    def _post(self, message, want_id, _retried=False):
         try:
             resp = requests.post(self.url, json=message, headers=self._headers(),
                                  timeout=60, stream=True)
@@ -231,6 +234,11 @@ class MCPHttpServer:
         try:
             if resp.status_code == 202:   # accepted (notifications) — no body
                 return None
+            # Token expired? Refresh once via OAuth and retry the same request.
+            if resp.status_code == 401 and self.oauth and not _retried:
+                resp.close()
+                if self.oauth.refresh():
+                    return self._post(message, want_id, _retried=True)
             if resp.status_code >= 400:
                 _logger.warning(f"MCP '{self.name}' (HTTP) {resp.status_code}: {resp.text[:200]}")
                 return {"error": {"message": f"HTTP {resp.status_code}"}}
@@ -291,11 +299,11 @@ class MCPManager:
             return server.tools
         return None
 
-    def add_http_server(self, name, url, headers=None):
-        """Add and start a remote MCP server over Streamable HTTP (optionally authed)."""
+    def add_http_server(self, name, url, headers=None, oauth=None):
+        """Add and start a remote MCP server over Streamable HTTP (token/header or OAuth)."""
         if name in self.servers:
             self.servers[name].stop()
-        server = MCPHttpServer(name, url, headers)
+        server = MCPHttpServer(name, url, headers, oauth=oauth)
         if server.start():
             self.servers[name] = server
             return server.tools
