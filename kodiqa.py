@@ -633,21 +633,95 @@ class Kodiqa:
 
     # ── Tab Completion ──
 
-    _SLASH_COMMANDS = [
-        "/model", "/models", "/pull", "/delete", "/rm", "/update", "/multi", "/single", "/scan", "/clear", "/compact",
-        "/memories", "/forget", "/context", "/key", "/tokens", "/config",
-        "/export", "/checkpoint", "/restore", "/env", "/verbose", "/mode",
-        "/plan", "/accept", "/search", "/cd", "/branch", "/mcp",
-        "/autocommit", "/budget", "/undo", "/redo", "/diff", "/lint",
-        "/pin", "/unpin", "/alias", "/unalias", "/notify", "/optimizer", "/theme",
-        "/share", "/pr", "/review", "/issue", "/init", "/plugins",
-        "/agent", "/agents", "/lsp", "/voice",
-        "/changelog", "/stats", "/review-local", "/test", "/test-fix", "/persona", "/patch",
-        "/profile", "/refactor", "/history", "/watch", "/embed", "/rag",
-        "/debug", "/diagram",
-        "/architect", "/sandbox", "/map", "/team", "/teams",
-        "/help", "/quit",
+    # Single source of truth for every slash command.
+    # Each spec: (name, aliases, handler_method, group, args, description).
+    # The dispatch table (_COMMAND_HANDLERS), the autocomplete list (_SLASH_COMMANDS),
+    # and /help are ALL derived from this — so they can never drift apart.
+    _COMMAND_SPECS = [
+        ("/model", (), "_cmd_model", "Models & providers", "<name>", "Switch model (interactive picker if no arg)"),
+        ("/multi", (), "_cmd_multi", "Models & providers", "<models>", "Multi-model consensus mode"),
+        ("/single", (), "_cmd_single", "Models & providers", "", "Back to single model mode"),
+        ("/models", (), "_cmd_models", "Models & providers", "", "List all available models (live discovery)"),
+        ("/pull", (), "_cmd_pull", "Models & providers", "<model>", "Download an Ollama model"),
+        ("/delete", ("/rm",), "_cmd_delete", "Models & providers", "[model]", "Delete local Ollama model(s)"),
+        ("/update", (), "_cmd_update", "Models & providers", "", "Check now for model + new-model updates"),
+        ("/key", (), "_cmd_key", "Models & providers", "[provider]", "Add/update an API key"),
+
+        ("/clear", (), "_cmd_clear", "Conversation", "", "Clear conversation"),
+        ("/compact", (), "_cmd_compact", "Conversation", "", "Summarize conversation to save context"),
+        ("/context", (), "_cmd_context", "Conversation", "", "Show project context file"),
+        ("/memories", (), "_cmd_memories", "Conversation", "", "Show stored memories"),
+        ("/forget", (), "_cmd_forget", "Conversation", "<id>", "Delete a memory"),
+        ("/tokens", (), "_cmd_tokens", "Conversation", "", "Session token usage + cost"),
+        ("/export", (), "_cmd_export", "Conversation", "", "Export session to markdown"),
+        ("/checkpoint", (), "_cmd_checkpoint", "Conversation", "[name]", "Save a conversation checkpoint"),
+        ("/restore", (), "_cmd_restore", "Conversation", "[name]", "Restore from a checkpoint"),
+        ("/branch", (), "_cmd_branch", "Conversation", "", "Save/switch/list conversation branches"),
+        ("/history", (), "_cmd_history", "Conversation", "", "Browse and resume past sessions"),
+        ("/undo", (), "_cmd_undo", "Conversation", "[path]", "Undo last file edit"),
+        ("/redo", (), "_cmd_redo", "Conversation", "[path]", "Re-apply an undone edit"),
+
+        ("/mode", (), "_cmd_mode", "Modes & permissions", "[mode]", "Permission mode: default/relaxed/auto"),
+        ("/plan", (), "_cmd_plan", "Modes & permissions", "", "Toggle plan mode"),
+        ("/accept", (), "_cmd_accept", "Modes & permissions", "", "Toggle batch edit review"),
+        ("/verbose", (), "_cmd_verbose", "Modes & permissions", "", "Toggle compact/verbose streaming"),
+        ("/sandbox", (), "_cmd_sandbox", "Modes & permissions", "[on|off]", "Toggle OS-level command sandboxing"),
+        ("/autocommit", (), "_cmd_autocommit", "Modes & permissions", "", "Toggle auto git commit after edits"),
+        ("/budget", (), "_cmd_budget", "Modes & permissions", "<amount>", "Set session budget limit"),
+        ("/persona", (), "_cmd_persona", "Modes & permissions", "<name>", "Switch AI persona"),
+        ("/architect", (), "_cmd_architect", "Modes & permissions", "<planner> <impl>", "Architect mode: planner + implementer"),
+
+        ("/scan", (), "_cmd_scan", "Project & context", "[path]", "Scan project into context"),
+        ("/cd", (), "_cmd_cd", "Project & context", "<path>", "Change working directory"),
+        ("/pin", (), "_cmd_pin", "Project & context", "<path>", "Pin file to always include in context"),
+        ("/unpin", (), "_cmd_unpin", "Project & context", "<path>", "Remove pinned file"),
+        ("/lint", (), "_cmd_lint", "Project & context", "<cmd>", "Set auto-lint command after edits"),
+        ("/map", (), "_cmd_map", "Project & context", "[path]", "Repository map with symbol extraction"),
+        ("/init", (), "_cmd_init", "Project & context", "[template]", "Scaffold project from template"),
+        ("/watch", (), "_cmd_watch", "Project & context", "<path>", "Watch files for changes"),
+        ("/embed", (), "_cmd_embed", "Project & context", "[path]", "Index files for RAG search"),
+        ("/rag", (), "_cmd_rag", "Project & context", "<query>", "RAG search + AI answer"),
+
+        ("/mcp", (), "_cmd_mcp", "Tools & UI", "", "Manage MCP tool servers"),
+        ("/search", (), "_cmd_search", "Tools & UI", "", "Switch search engine"),
+        ("/config", (), "_cmd_config", "Tools & UI", "", "Show/reload config"),
+        ("/env", (), "_cmd_env", "Tools & UI", "", "Show shell environment"),
+        ("/lsp", (), "_cmd_lsp", "Tools & UI", "[start|stop]", "Language Server Protocol"),
+        ("/voice", (), "_cmd_voice", "Tools & UI", "", "Voice input via Whisper"),
+        ("/plugins", (), "_cmd_plugins", "Tools & UI", "", "List/reload custom tool plugins"),
+        ("/theme", (), "_cmd_theme", "Tools & UI", "<name>", "Switch UI theme"),
+        ("/alias", (), "_cmd_alias", "Tools & UI", "<name> <cmd>", "Create a command alias"),
+        ("/unalias", (), "_cmd_unalias", "Tools & UI", "<name>", "Remove a command alias"),
+        ("/notify", (), "_cmd_notify", "Tools & UI", "", "Toggle desktop notifications"),
+        ("/optimizer", (), "_cmd_optimizer", "Tools & UI", "", "Toggle cost optimizer tips"),
+
+        ("/diff", (), "_cmd_diff", "Git & GitHub", "[args]", "Show git diff"),
+        ("/pr", (), "_cmd_pr", "Git & GitHub", "[title]", "Create a GitHub PR"),
+        ("/review", (), "_cmd_review", "Git & GitHub", "[number]", "Review a PR diff"),
+        ("/issue", (), "_cmd_issue", "Git & GitHub", "[number]", "View a GitHub issue"),
+        ("/review-local", (), "_cmd_review_local", "Git & GitHub", "", "AI review of staged git changes"),
+
+        ("/test", (), "_cmd_test", "Generate & agents", "<file>", "Auto-generate unit tests"),
+        ("/test-fix", (), "_cmd_test_fix", "Generate & agents", "<cmd>", "Auto test-fix loop"),
+        ("/refactor", (), "_cmd_refactor", "Generate & agents", "", "Multi-file refactoring"),
+        ("/debug", (), "_cmd_debug", "Generate & agents", "<script>", "Run a script and debug with AI"),
+        ("/diagram", (), "_cmd_diagram", "Generate & agents", "<desc>", "Generate a Mermaid diagram"),
+        ("/patch", (), "_cmd_patch", "Generate & agents", "", "Apply diff/patch from clipboard"),
+        ("/agent", (), "_cmd_agent", "Generate & agents", "<task>", "Spawn a sub-agent"),
+        ("/agents", (), "_cmd_agents", "Generate & agents", "", "List running/completed sub-agents"),
+        ("/team", (), "_cmd_team", "Generate & agents", "<task>", "Spawn an agent team"),
+        ("/teams", (), "_cmd_teams", "Generate & agents", "", "List running/completed teams"),
+
+        ("/changelog", (), "_cmd_changelog", "Session & misc", "", "Show version history"),
+        ("/stats", (), "_cmd_stats", "Session & misc", "", "Session metrics"),
+        ("/profile", (), "_cmd_profile", "Session & misc", "", "Save/load config profiles"),
+        ("/share", (), "_cmd_share", "Session & misc", "", "Export session as styled HTML"),
+        ("/help", (), "_cmd_help", "Session & misc", "", "Show this help"),
+        ("/quit", ("/exit",), "_cmd_quit", "Session & misc", "", "Exit"),
     ]
+    # Dispatch table + autocomplete list, both derived from _COMMAND_SPECS (no drift).
+    _COMMAND_HANDLERS = {n: spec[2] for spec in _COMMAND_SPECS for n in (spec[0], *spec[1])}
+    _SLASH_COMMANDS = sorted(_COMMAND_HANDLERS)
 
 
     def _discover_models(self):
@@ -1639,856 +1713,884 @@ class Kodiqa:
         parts = cmd.split(None, 1)
         command = parts[0].lower()
         arg = parts[1] if len(parts) > 1 else ""
+        handler = self._COMMAND_HANDLERS.get(command)
+        if handler:
+            getattr(self, handler)(arg)
+            return
+        # Check user-defined aliases before giving up
+        aliases = self.settings.get("aliases", {})
+        cmd_name = command.lstrip("/")
+        if cmd_name in aliases:
+            expanded = "/" + aliases[cmd_name]
+            if arg:
+                expanded += " " + arg
+            self._handle_slash(expanded)
+        else:
+            self.console.print(f"[red]Unknown command: {command}. Type /help[/]")
 
-        if command in ("/quit", "/exit"):
-            self._quit()
-            sys.exit(0)
-        elif command == "/help":
-            claude_status = "[green]connected[/]" if self.claude_key else "[dim]not set[/]"
-            provider_lines = [f"  [dim]Claude: claude, sonnet, haiku, opus ({claude_status})[/]"]
+    def _cmd_quit(self, arg):
+        self._quit()
+        sys.exit(0)
+
+    def _cmd_help(self, arg):
+        # Rendered entirely from _COMMAND_SPECS so it can never drift from the
+        # actual command set. Provider status line is still computed live.
+        claude_status = "[green]connected[/]" if self.claude_key else "[dim]not set[/]"
+        provider_lines = [f"  [dim]Claude: claude, sonnet, haiku, opus ({claude_status})[/]"]
+        for pn, pv in OPENAI_COMPAT_PROVIDERS.items():
+            st = "[green]connected[/]" if self.api_keys.get(pn, "") else "[dim]not set[/]"
+            aliases = ", ".join(list(pv["aliases"].keys())[:4])
+            provider_lines.append(f"  [dim]{pv['label']}: {aliases} ({st})[/]")
+        lines = ["[dim]Providers:[/]", *provider_lines]
+        last_group = None
+        for name, cmd_aliases, _handler, group, args, desc in self._COMMAND_SPECS:
+            if group != last_group:
+                lines.append(f"\n[bold underline]{group}[/]")
+                last_group = group
+            label = name + ((" (" + ", ".join(cmd_aliases) + ")") if cmd_aliases else "")
+            sig = (label + " " + args).strip() if args else label
+            lines.append(f"  [bold]{sig}[/] [dim]—[/] {desc}")
+        self.console.print(Panel("\n".join(lines), title="Commands", border_style="blue"))
+
+    def _cmd_model(self, arg):
+        if not arg:
+            _prov = self._get_provider_for_model(self.model)
+            provider = OPENAI_COMPAT_PROVIDERS[_prov]["label"] + " API" if _prov else ("Claude API" if is_claude_model(self.model) else "Local/Ollama")
+            self.console.print(f"Current model: [cyan]{self.model}[/] ({provider})\n")
+            # Build numbered list of all available models
+            choices = []
+            self.console.print("[bold green]Local (Ollama):[/]")
+            installed_local = self._installed_ollama_models()
+            if installed_local is None:
+                # Ollama unreachable — fall back to the static alias list.
+                for alias, full in MODEL_ALIASES.items():
+                    choices.append((alias, full, "local"))
+                    marker = " [cyan]◀[/]" if full == self.model else ""
+                    self.console.print(f"  {len(choices)}. {alias} [dim]→ {full}[/]{marker}")
+            elif not installed_local:
+                self.console.print("  [dim]No local models installed. Use /pull <model> to download one.[/]")
+            else:
+                # Show what's actually installed; annotate with a friendly alias when one matches.
+                def _norm(n):
+                    return n[:-7] if n.endswith(":latest") else n
+                alias_for = {}
+                for a, full in MODEL_ALIASES.items():
+                    alias_for.setdefault(_norm(full), a)
+                for name, size_str in installed_local:
+                    choices.append((name, name, "local"))
+                    a = alias_for.get(_norm(name))
+                    alias_hint = f" [dim](/{a})[/]" if a else ""
+                    marker = " [cyan]◀[/]" if _norm(name) == _norm(self.model) else ""
+                    self.console.print(f"  {len(choices)}. [cyan]{name}[/] [dim]({size_str})[/]{alias_hint}{marker}")
+            extras = self._get_api_model_choices()
+            if self.claude_key:
+                self.console.print("[bold yellow]Claude API:[/]")
+                for alias, full in CLAUDE_ALIASES.items():
+                    choices.append((alias, full, "claude"))
+                    marker = " [cyan]◀[/]" if full == self.model else ""
+                    self.console.print(f"  {len(choices)}. {alias} [dim]→ {full}[/]{marker}")
+                for m in extras.get("claude", []):
+                    choices.append((m, m, "claude"))
+                    marker = " [cyan]◀[/]" if m == self.model else ""
+                    self.console.print(f"  {len(choices)}. [dim]{m}[/] [dim](live)[/]{marker}")
             for pn, pv in OPENAI_COMPAT_PROVIDERS.items():
-                k = self.api_keys.get(pn, "")
-                st = "[green]connected[/]" if k else "[dim]not set[/]"
-                aliases = ", ".join(list(pv["aliases"].keys())[:4])
-                provider_lines.append(f"  [dim]{pv['label']}: {aliases} ({st})[/]")
-            self.console.print(Panel(
-                "[bold]/model <name>[/]  - Switch model\n"
-                "  [dim]Local: fast, qwen, coder, reason, gpt-local[/]\n"
-                + "\n".join(provider_lines) + "\n"
-                "[bold]/multi <models>[/] - Multi-model mode (e.g. /multi coder qwen reason)\n"
-                "[bold]/single[/]        - Back to single model mode\n"
-                "[bold]/models[/]       - List all available models\n"
-                "[bold]/pull <model>[/]  - Download an Ollama model\n"
-                "[bold]/delete[/] [model] - Delete local Ollama model(s) (interactive if no arg)\n"
-                "[bold]/update[/]       - Check now for model updates + new models (bypasses 24h throttle)\n"
-                "[bold]/scan[/] [path]   - Scan project into context\n"
-                "[bold]/clear[/]         - Clear conversation\n"
-                "[bold]/memories[/]      - Show stored memories\n"
-                "[bold]/forget <id>[/]   - Delete a memory\n"
-                "[bold]/compact[/]       - Summarize conversation to save context\n"
-                "[bold]/context[/]       - Show project context file\n"
-                "[bold]/key[/]           - Add/update API key (Claude or Qwen)\n"
-                "[bold]/tokens[/]        - Show session token usage and cost\n"
-                "[bold]/config[/]        - Show/reload config\n"
-                "[bold]/export[/]        - Export session to markdown\n"
-                "[bold]/checkpoint[/] [n] - Save conversation checkpoint\n"
-                "[bold]/restore[/] [n]   - Restore from checkpoint\n"
-                "[bold]/env[/]           - Show shell environment\n"
-                "[bold]/verbose[/]       - Toggle verbose mode (show/hide code in stream)\n"
-                "[bold]/mode[/] <mode>   - Permission mode: default/relaxed/auto\n"
-                "[bold]/plan[/]          - Toggle plan mode (explore → plan → approve → implement)\n"
-                "[bold]/accept[/]        - Toggle batch edit review (accept/reject per file)\n"
-                "[bold]/search[/]        - Switch search engine (google/duckduckgo)\n"
-                "[bold]/cd <path>[/]     - Change working directory\n"
-                "[bold]/branch[/]        - Save/switch/list conversation branches\n"
-                "[bold]/mcp[/]           - Manage MCP tool servers (add/remove/list)\n"
-                "[bold]/pin[/] <path>     - Pin file to always include in context\n"
-                "[bold]/unpin[/] <path>   - Remove pinned file\n"
-                "[bold]/alias[/]         - Create command alias\n"
-                "[bold]/theme[/] <name>   - Switch theme (dark/light/dracula/monokai/nord)\n"
-                "[bold]/pr[/] [title]     - Create GitHub PR\n"
-                "[bold]/review[/] [n]     - Review PR diff\n"
-                "[bold]/agent[/] <task>   - Spawn sub-agent\n"
-                "[bold]/lsp[/]           - Language Server Protocol\n"
-                "[bold]/changelog[/]     - Show version history\n"
-                "[bold]/stats[/]         - Session metrics\n"
-                "[bold]/review-local[/]  - AI review of staged git changes\n"
-                "[bold]/test[/] <file>    - Generate unit tests\n"
-                "[bold]/persona[/] <name> - Switch AI persona\n"
-                "[bold]/patch[/]         - Apply diff from clipboard\n"
-                "[bold]/profile[/]       - Save/load config profiles\n"
-                "[bold]/refactor[/]      - Multi-file refactoring\n"
-                "[bold]/history[/]       - Browse past sessions\n"
-                "[bold]/watch[/] <path>   - Watch files for changes\n"
-                "[bold]/embed[/] [path]   - Index files for RAG search\n"
-                "[bold]/rag[/] <query>    - RAG search + AI answer\n"
-                "[bold]/debug[/] <script> - Run and debug script\n"
-                "[bold]/diagram[/] <desc> - Generate Mermaid diagram\n"
-                "[bold]/undo[/] [path]    - Undo last file edit\n"
-                "[bold]/redo[/] [path]    - Re-apply an undone edit\n"
-                "[bold]/quit[/]          - Exit",
-                title="Commands", border_style="blue",
-            ))
-        elif command == "/model":
-            if not arg:
-                _prov = self._get_provider_for_model(self.model)
-                provider = OPENAI_COMPAT_PROVIDERS[_prov]["label"] + " API" if _prov else ("Claude API" if is_claude_model(self.model) else "Local/Ollama")
-                self.console.print(f"Current model: [cyan]{self.model}[/] ({provider})\n")
-                # Build numbered list of all available models
-                choices = []
-                self.console.print("[bold green]Local (Ollama):[/]")
-                installed_local = self._installed_ollama_models()
-                if installed_local is None:
-                    # Ollama unreachable — fall back to the static alias list.
-                    for alias, full in MODEL_ALIASES.items():
-                        choices.append((alias, full, "local"))
-                        marker = " [cyan]◀[/]" if full == self.model else ""
-                        self.console.print(f"  {len(choices)}. {alias} [dim]→ {full}[/]{marker}")
-                elif not installed_local:
-                    self.console.print("  [dim]No local models installed. Use /pull <model> to download one.[/]")
-                else:
-                    # Show what's actually installed; annotate with a friendly alias when one matches.
-                    def _norm(n):
-                        return n[:-7] if n.endswith(":latest") else n
-                    alias_for = {}
-                    for a, full in MODEL_ALIASES.items():
-                        alias_for.setdefault(_norm(full), a)
-                    for name, size_str in installed_local:
-                        choices.append((name, name, "local"))
-                        a = alias_for.get(_norm(name))
-                        alias_hint = f" [dim](/{a})[/]" if a else ""
-                        marker = " [cyan]◀[/]" if _norm(name) == _norm(self.model) else ""
-                        self.console.print(f"  {len(choices)}. [cyan]{name}[/] [dim]({size_str})[/]{alias_hint}{marker}")
-                extras = self._get_api_model_choices()
-                if self.claude_key:
-                    self.console.print("[bold yellow]Claude API:[/]")
-                    for alias, full in CLAUDE_ALIASES.items():
-                        choices.append((alias, full, "claude"))
-                        marker = " [cyan]◀[/]" if full == self.model else ""
-                        self.console.print(f"  {len(choices)}. {alias} [dim]→ {full}[/]{marker}")
-                    for m in extras.get("claude", []):
-                        choices.append((m, m, "claude"))
-                        marker = " [cyan]◀[/]" if m == self.model else ""
-                        self.console.print(f"  {len(choices)}. [dim]{m}[/] [dim](live)[/]{marker}")
-                for pn, pv in OPENAI_COMPAT_PROVIDERS.items():
-                    if not self.api_keys.get(pn, ""):
-                        continue
-                    self.console.print(f"[bold {pv['color']}]{pv['label']} API:[/]")
-                    for alias, full in pv["aliases"].items():
-                        choices.append((alias, full, pn))
-                        marker = " [cyan]◀[/]" if full == self.model else ""
-                        self.console.print(f"  {len(choices)}. {alias} [dim]→ {full}[/]{marker}")
-                    for m in extras.get(pn, []):
-                        choices.append((m, m, pn))
-                        marker = " [cyan]◀[/]" if m == self.model else ""
-                        self.console.print(f"  {len(choices)}. [dim]{m}[/] [dim](live)[/]{marker}")
-                self.console.print()
-                try:
-                    pick = Prompt.ask("[bold]Pick a model[/] (number or name, or 'skip')")
-                except (EOFError, KeyboardInterrupt):
-                    self.console.print("\n[dim]Cancelled.[/]")
-                    return
-                pick = pick.strip()
-                if pick.lower() in ("skip", ""):
-                    return
-                if pick.isdigit() and 1 <= int(pick) <= len(choices):
-                    alias, full, prov = choices[int(pick) - 1]
-                    self.model = full
-                    self.multi_models = []
-                    if prov == "claude":
-                        self._stop_ollama()
-                        prov_str = "[yellow]Claude API[/]"
-                    elif prov == "local":
-                        prov_str = "[green]Local[/]"
-                        self._ensure_ollama()
-                    else:
-                        self._stop_ollama()
-                        prov_str = f"[{OPENAI_COMPAT_PROVIDERS[prov]['color']}]{OPENAI_COMPAT_PROVIDERS[prov]['label']} API[/]"
-                    self.console.print(f"Switched to [cyan]{self.model}[/] ({prov_str}) [dim](single mode)[/]")
-                    self.console.print("[dim]Use /multi all to go back to multi-model mode[/]")
-                    return
-                else:
-                    arg = pick
-            # Resolve alias to model name
-            new_model = arg
-            resolved_prov = None
-            if arg in CLAUDE_ALIASES:
-                if not self.claude_key:
-                    self.console.print("[yellow]No Claude API key set.[/]")
-                    key = Prompt.ask("[bold]Enter your Claude API key[/] (or 'skip' to cancel)")
-                    if key.strip().lower() == "skip" or not key.strip():
-                        self.console.print("[dim]Cancelled. Staying on current model.[/]")
-                        return
-                    self.claude_key = key.strip()
-                    self.settings["claude_api_key"] = self.claude_key
-                    save_settings(self.settings)
-                    self.console.print("[green]API key saved![/]")
-                new_model = CLAUDE_ALIASES[arg]
-                resolved_prov = "claude"
-            else:
-                # Check all OpenAI-compat providers
-                for pn, pv in OPENAI_COMPAT_PROVIDERS.items():
-                    if arg in pv["aliases"]:
-                        if not self.api_keys.get(pn, ""):
-                            self.console.print(f"[yellow]No {pv['label']} API key set.[/]")
-                            key = Prompt.ask(f"[bold]Enter your {pv['label']} API key[/] (or 'skip')")
-                            if key.strip().lower() == "skip" or not key.strip():
-                                self.console.print("[dim]Cancelled.[/]")
-                                return
-                            self.api_keys[pn] = key.strip()
-                            self.settings[pv["key_setting"]] = key.strip()
-                            if pn == "qwen":
-                                self.qwen_key = key.strip()
-                            save_settings(self.settings)
-                            self.console.print(f"[green]{pv['label']} API key saved![/]")
-                        new_model = pv["aliases"][arg]
-                        resolved_prov = pn
-                        break
-                if not resolved_prov:
-                    if arg in MODEL_ALIASES:
-                        new_model = MODEL_ALIASES[arg]
-            self.model = new_model
-            self.multi_models = []
-            # Determine provider for display
-            if resolved_prov == "claude" or is_claude_model(self.model) or self._is_live_claude(self.model):
-                self._stop_ollama()
-                provider = "[yellow]Claude API[/]"
-            else:
-                _pn = self._get_provider_for_model(self.model)
-                if _pn:
-                    self._stop_ollama()
-                    provider = f"[{OPENAI_COMPAT_PROVIDERS[_pn]['color']}]{OPENAI_COMPAT_PROVIDERS[_pn]['label']} API[/]"
-                else:
-                    provider = "[green]Local[/]"
-                    self._ensure_ollama()
-            self.console.print(f"Switched to [cyan]{self.model}[/] ({provider}) [dim](single mode)[/]")
-            self.console.print("[dim]Use /multi all to go back to multi-model mode[/]")
-        elif command == "/multi":
-            if not arg:
-                self.console.print("[red]Usage: /multi coder qwen reason  or  /multi all[/]")
-                return
-            if arg.strip().lower() == "all":
-                # Auto-discover all installed Ollama models
-                resolved = []
-                try:
-                    resp = requests.get(f"{OLLAMA_URL}/api/tags", timeout=5)
-                    resp.raise_for_status()
-                    for m in resp.json().get("models", []):
-                        resolved.append(m["name"])
-                except Exception:
-                    self.console.print("[red]Can't reach Ollama to list models.[/]")
-                    return
-                if not resolved:
-                    self.console.print("[yellow]No Ollama models found.[/]")
-                    return
-                if len(resolved) < 2:
-                    self.console.print("[yellow]Multi-model needs at least 2 models. Only 1 installed.[/]")
-                    self.console.print(f"  • Pull more models or use [bold]/model {resolved[0]}[/] for single mode")
-                    return
-            else:
-                names = arg.split()
-                resolved = []
-                for name in names:
-                    if name in CLAUDE_ALIASES:
-                        if not self.claude_key:
-                            self.console.print(f"[red]{name} needs Claude API key. Use /key to add one.[/]")
-                            return
-                        resolved.append(CLAUDE_ALIASES[name])
-                    elif get_openai_provider(name):
-                        _pn = get_openai_provider(name)
-                        _pv = OPENAI_COMPAT_PROVIDERS[_pn]
-                        if not self.api_keys.get(_pn, ""):
-                            self.console.print(f"[red]{name} needs {_pv['label']} API key. Use /key {_pn} to add one.[/]")
-                            return
-                        resolved.append(_pv["aliases"][name])
-                    elif name in MODEL_ALIASES:
-                        resolved.append(MODEL_ALIASES[name])
-                    else:
-                        resolved.append(name)
-            if len(resolved) < 2:
-                self.console.print("[yellow]Multi-model needs at least 2 models.[/]")
-                return
-            self.multi_models = resolved
-            names_str = ", ".join(f"[cyan]{m}[/]" for m in resolved)
-            self.console.print(f"Multi-model mode: {names_str}")
-            self.console.print("[dim]All models will answer each question. Use /single to go back.[/]")
-        elif command == "/single":
-            self.multi_models = []
-            self.console.print(f"Single model mode: [cyan]{self.model}[/]")
-        elif command == "/models":
-            self._list_models()
-        elif command == "/update":
-            # Force an immediate model update/discovery check, bypassing the throttle.
-            self._skip_updates = False
-            self.settings["last_update_check"] = 0
-            self._check_updates(show_welcome=False)
-        elif command in ("/delete", "/rm"):
-            self._delete_model(arg)
-        elif command == "/pull":
-            self._pull_model(arg)
-        elif command == "/clear":
-            self.history = []
-            self._clear_session()
-            self.console.print("[dim]Conversation cleared.[/]")
-        elif command == "/memories":
-            result = self.memory.list_all()
-            self.console.print(Panel(result, title="Memories", border_style="magenta"))
-        elif command == "/forget":
-            if not arg:
-                self.console.print("[red]Usage: /forget <id>[/]")
-                return
-            try:
-                self.console.print(self.memory.delete(int(arg)))
-            except ValueError:
-                self.console.print("[red]ID must be a number.[/]")
-        elif command == "/scan":
-            self._scan_project(os.path.expanduser(arg) if arg else self.cwd)
-        elif command == "/compact":
-            self._compact()
-        elif command == "/context":
-            ctx_path = self._get_project_context_path()
-            if os.path.isfile(ctx_path):
-                with open(ctx_path, "r") as f:
-                    self.console.print(Panel(f.read(), title=f"Project Context ({self.cwd})", border_style="magenta"))
-            else:
-                self.console.print(f"[dim]No project context for {self.cwd}[/]")
-            self.console.print(f"[dim]File: {ctx_path}[/]")
-            self.console.print(f"[dim]Global: {CONTEXT_FILE}[/]")
-        elif command == "/key":
-            self._setup_api_key(arg.strip().lower() if arg.strip() else None)
-        elif command == "/cd":
-            path = os.path.expanduser(arg) if arg else os.path.expanduser("~")
-            if os.path.isdir(path):
-                self.cwd = os.path.abspath(path)
-                os.chdir(self.cwd)
-                self._detect_git()
-                self._load_kodiqaignore()
-                git_note = ""
-                if self.git_info:
-                    git_note = f" (git: {self.git_info['branch']})"
-                self.console.print(f"[dim]Changed to {self.cwd}{git_note}[/]")
-            else:
-                self.console.print(f"[red]Not a directory: {path}[/]")
-        elif command == "/search":
-            if not arg:
-                engine = get_search_engine()
-                g_key, g_cx = get_google_api_keys()
-                api_status = "[green]configured[/]" if (g_key and g_cx) else "[dim]not set[/]"
-                self.console.print(f"Search engine: [cyan]{engine}[/]")
-                self.console.print(f"Google API: {api_status}")
-                self.console.print("[dim]Usage: /search google | /search duckduckgo | /search api[/]")
-            elif arg.lower() in ("google", "g"):
-                set_search_engine("google")
-                self.console.print("[green]Switched to Google search (scraping, no API key)[/]")
-            elif arg.lower() in ("duckduckgo", "ddg", "duck"):
-                set_search_engine("duckduckgo")
-                self.console.print("[green]Switched to DuckDuckGo search[/]")
-            elif arg.lower() in ("api", "google_api", "gapi"):
-                g_key, g_cx = get_google_api_keys()
-                if not g_key or not g_cx:
-                    self.console.print("[yellow]Google Custom Search API setup[/]")
-                    self.console.print("[dim]Get API key: https://console.cloud.google.com/apis[/]")
-                    self.console.print("[dim]Get Search Engine ID: https://programmablesearchengine.google.com/[/]")
-                    try:
-                        api_key = Prompt.ask("\n[bold]Google API key[/] (or 'skip')")
-                        if api_key.strip().lower() == "skip":
-                            return
-                        cx = Prompt.ask("[bold]Search Engine ID (cx)[/]")
-                        if not cx.strip():
-                            return
-                        set_google_api_keys(api_key.strip(), cx.strip())
-                        self.settings["google_api_key"] = api_key.strip()
-                        self.settings["google_cx"] = cx.strip()
-                        save_settings(self.settings)
-                        set_search_engine("google_api")
-                        self.console.print("[green]Google API configured and set as search engine![/]")
-                    except (EOFError, KeyboardInterrupt):
-                        return
-                else:
-                    set_search_engine("google_api")
-                    self.console.print("[green]Switched to Google API search (100 free/day)[/]")
-            else:
-                self.console.print("[red]Unknown engine. Use: /search google | /search duckduckgo | /search api[/]")
-        elif command == "/config":
-            if arg.strip().lower() == "reload":
-                self.config = load_config()
-                set_hooks(self.config.get("hooks", {}))
-                self.console.print("[green]Config reloaded.[/]")
-            else:
-                self.console.print(Panel(
-                    json.dumps(self.config, indent=2, default=list),
-                    title="Config", border_style="blue",
-                ))
-                self.console.print(f"[dim]Edit: {CONFIG_FILE}[/]")
-                self.console.print(f"[dim]Reload: /config reload[/]")
-        elif command == "/tokens":
-            st = self.session_tokens
-            # Estimate context usage
-            ctx_est = self._estimate_tokens()
-            limit = self._context_limit()
-            pct = ctx_est * 100 // limit if limit > 0 else 0
-            bar_len = 20
-            filled = pct * bar_len // 100
-            bar = "[green]" + "█" * filled + "[/][dim]" + "░" * (bar_len - filled) + "[/]"
-            self.console.print(Panel(
-                f"Input tokens:  {st['input']:,}\n"
-                f"Output tokens: {st['output']:,}\n"
-                f"Cache read:    {st['cache_read']:,}\n"
-                f"Cache create:  {st['cache_creation']:,}\n"
-                f"Total cost:    ${st['cost']:.4f}\n"
-                f"Context:       ~{ctx_est:,} / {limit:,} tokens ({pct}%)\n"
-                f"               {bar} {len(self.history)} messages",
-                title="Session Token Usage", border_style="blue",
-            ))
-        elif command == "/export":
-            self._export_session()
-        elif command == "/checkpoint":
-            name = arg.strip() if arg else f"cp_{len(self._checkpoints) + 1}"
-            self._save_checkpoint(name)
-        elif command == "/restore":
-            if not arg:
-                # List checkpoints
-                if not self._checkpoints:
-                    self.console.print("[dim]No checkpoints saved. Use /checkpoint <name> to create one.[/]")
-                else:
-                    self.console.print("[bold]Checkpoints:[/]")
-                    for cp_name in self._checkpoints:
-                        msgs = self._checkpoints[cp_name]["count"]
-                        self.console.print(f"  [cyan]{cp_name}[/] ({msgs} messages)")
-            else:
-                self._restore_checkpoint(arg.strip())
-        elif command == "/env":
-            lines = [f"  [cyan]{k}[/]: {v}" for k, v in self.shell_env.items()]
-            self.console.print(Panel("\n".join(lines), title="Shell Environment", border_style="blue"))
-        elif command == "/verbose":
-            self.compact_mode = not self.compact_mode
-            if self.compact_mode:
-                self.console.print("[green]Compact mode ON[/] — code blocks hidden during streaming")
-            else:
-                self.console.print("[yellow]Verbose mode ON[/] — full output shown during streaming")
-        elif command == "/mode":
-            if not arg:
-                mode_desc = {"default": "confirm all writes/edits/commands",
-                             "relaxed": "auto-approve file ops, confirm commands only",
-                             "auto": "no confirmations"}
-                self.console.print(f"Current mode: [bold cyan]{self.permission_mode}[/] — {mode_desc[self.permission_mode]}")
-                self.console.print("[dim]Usage: /mode default | /mode relaxed | /mode auto[/]")
-            elif arg.strip().lower() in ("default", "relaxed", "auto"):
-                self.permission_mode = arg.strip().lower()
-                labels = {"default": "[green]Default[/] — confirm all writes/edits/commands",
-                          "relaxed": "[yellow]Relaxed[/] — auto-approve file ops, confirm commands only",
-                          "auto": "[red]Auto[/] — no confirmations (be careful!)"}
-                self.console.print(f"  Permission mode: {labels[self.permission_mode]}")
-            else:
-                self.console.print("[red]Unknown mode. Use: default, relaxed, or auto[/]")
-        elif command == "/plan":
-            if self.plan_mode:
-                self.console.print("[dim]Already in plan mode. Type your request to get a plan.[/]")
-            else:
-                self.plan_mode = True
-                self._pending_plan = None
-                self.console.print(Panel(
-                    "[bold]Plan mode ON[/]\n\n"
-                    "The AI will now:\n"
-                    "  1. Explore the codebase\n"
-                    "  2. Design a step-by-step plan\n"
-                    "  3. Show the plan for your approval\n"
-                    "  4. Only implement after you approve\n\n"
-                    "Type your request, or [bold]/plan off[/] to exit plan mode.",
-                    border_style="magenta", title="Plan Mode",
-                ))
-            if arg and arg.strip().lower() == "off":
-                self.plan_mode = False
-                self._pending_plan = None
-                self.console.print("[dim]Plan mode OFF — back to normal mode.[/]")
-        elif command == "/architect":
-            self._handle_architect(arg)
-        elif command == "/accept":
-            self.batch_edits = not self.batch_edits
-            if self.batch_edits:
-                self.console.print("[green]Batch edit review ON[/] — edits queued for review before applying")
-            else:
-                self.console.print("[yellow]Batch edit review OFF[/] — edits applied one at a time")
-        elif command == "/branch":
-            self._handle_branch(arg.strip())
-        elif command == "/mcp":
-            self._handle_mcp(arg.strip())
-        elif command == "/autocommit":
-            self.auto_commit = not self.auto_commit
-            self.settings["auto_commit"] = self.auto_commit
-            save_settings(self.settings)
-            if self.auto_commit:
-                self.console.print("[green]Auto-commit ON[/] — git commit after each AI edit")
-            else:
-                self.console.print("[yellow]Auto-commit OFF[/]")
-        elif command == "/budget":
-            if arg:
-                try:
-                    self.budget_limit = float(arg)
-                    self._budget_exceeded = False
-                    self.console.print(f"[green]Budget set to ${self.budget_limit:.2f}[/]")
-                except ValueError:
-                    self.console.print("[red]Usage: /budget <amount> (e.g. /budget 5)[/]")
-            else:
-                spent = self.session_tokens["cost"]
-                if self.budget_limit > 0:
-                    pct = (spent / self.budget_limit) * 100
-                    bar_w = 20
-                    filled = int(bar_w * min(pct, 100) / 100)
-                    bar = "█" * filled + "░" * (bar_w - filled)
-                    color = "green" if pct < 80 else ("yellow" if pct < 100 else "red")
-                    self.console.print(f"Budget: [{color}]{bar}[/] ${spent:.4f} / ${self.budget_limit:.2f} ({pct:.0f}%)")
-                else:
-                    self.console.print(f"Session cost: ${spent:.4f} [dim](no budget set — /budget <amount>)[/]")
-        elif command == "/undo":
-            if arg:
-                path = os.path.abspath(os.path.expanduser(arg))
-                result = do_undo_edit(path)
-                self.console.print(result)
-            else:
-                files_with_undo = [(p, len(buf)) for p, buf in _undo_buffer.items() if buf]
-                if files_with_undo:
-                    self.console.print("[bold]Files with undo history:[/]")
-                    for p, count in files_with_undo:
-                        rel = os.path.relpath(p, self.cwd) if p.startswith(self.cwd) else p
-                        self.console.print(f"  [cyan]{rel}[/] [dim]({count} undo steps)[/]")
-                    self.console.print("[dim]Usage: /undo <path>[/]")
-                else:
-                    self.console.print("[dim]No undo history yet.[/]")
-        elif command == "/redo":
-            if arg:
-                path = os.path.abspath(os.path.expanduser(arg))
-                result = do_redo_edit(path)
-                self.console.print(result)
-            else:
-                files_with_redo = redo_paths()
-                if files_with_redo:
-                    self.console.print("[bold]Files with redo history:[/]")
-                    for p, count in files_with_redo:
-                        rel = os.path.relpath(p, self.cwd) if p.startswith(self.cwd) else p
-                        self.console.print(f"  [cyan]{rel}[/] [dim]({count} redo steps)[/]")
-                    self.console.print("[dim]Usage: /redo <path>[/]")
-                else:
-                    self.console.print("[dim]Nothing to redo. Use /undo first.[/]")
-        elif command == "/diff":
-            try:
-                cmd = ["git", "diff"] + (arg.split() if arg else [])
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-                output = result.stdout.strip()
-                if output:
-                    self.console.print(Panel(output, title="git diff", border_style="cyan"))
-                else:
-                    self.console.print("[dim]No uncommitted changes.[/]")
-            except Exception as e:
-                self.console.print(f"[red]Error: {e}[/]")
-        elif command == "/lint":
-            if not arg:
-                if self.lint_cmd:
-                    auto = " [cyan](auto-fix ON)[/]" if self.lint_auto_fix else ""
-                    self.console.print(f"Lint command: [cyan]{self.lint_cmd}[/]{auto}")
-                else:
-                    self.console.print("[dim]No lint command set. Usage: /lint <command>[/]")
-                self.console.print("[dim]  /lint auto — toggle auto-fix (AI fixes lint errors automatically)[/]")
-            elif arg.strip().lower() == "off":
-                self.lint_cmd = ""
-                self.lint_auto_fix = False
-                self.console.print("[yellow]Auto-lint OFF[/]")
-            elif arg.strip().lower() == "auto":
-                self.lint_auto_fix = not self.lint_auto_fix
-                state = "ON" if self.lint_auto_fix else "OFF"
-                color = "green" if self.lint_auto_fix else "yellow"
-                self.console.print(f"[{color}]Auto lint-fix {state}[/] (max 3 iterations)")
-            else:
-                self.lint_cmd = arg.strip()
-                self.console.print(f"[green]Auto-lint ON[/] — running [cyan]{self.lint_cmd}[/] after edits")
-        elif command == "/sandbox":
-            if arg and arg.strip().lower() == "on":
-                self.sandbox_enabled = True
-                from actions import set_sandbox
-                set_sandbox(True)
-                self.console.print("[green]Sandbox ON[/] — commands restricted to cwd + /tmp")
-            elif arg and arg.strip().lower() == "off":
-                self.sandbox_enabled = False
-                from actions import set_sandbox
-                set_sandbox(False)
-                self.console.print("[yellow]Sandbox OFF[/]")
-            else:
-                state = "[green]ON[/]" if self.sandbox_enabled else "[dim]OFF[/]"
-                self.console.print(f"Sandbox: {state}")
-                self.console.print("[dim]  /sandbox on | /sandbox off[/]")
-        elif command == "/pin":
-            if not arg:
-                if self._pinned_files:
-                    self.console.print("[bold]Pinned files:[/]")
-                    for p in self._pinned_files:
-                        rel = os.path.relpath(p, self.cwd) if p.startswith(self.cwd) else p
-                        try:
-                            size = os.path.getsize(p)
-                            self.console.print(f"  [cyan]{rel}[/] [dim]({size:,} bytes)[/]")
-                        except OSError:
-                            self.console.print(f"  [cyan]{rel}[/] [dim](missing)[/]")
-                else:
-                    self.console.print("[dim]No pinned files. Usage: /pin <path>[/]")
-            else:
-                path = os.path.abspath(os.path.expanduser(arg.strip()))
-                if not os.path.isfile(path):
-                    self.console.print(f"[red]File not found: {arg}[/]")
-                elif path in self._pinned_files:
-                    self.console.print(f"[dim]Already pinned: {arg}[/]")
-                else:
-                    self._pinned_files.append(path)
-                    rel = os.path.relpath(path, self.cwd) if path.startswith(self.cwd) else path
-                    self.console.print(f"[green]Pinned:[/] {rel}")
-        elif command == "/unpin":
-            if not arg:
-                self.console.print("[dim]Usage: /unpin <path>[/]")
-            else:
-                path = os.path.abspath(os.path.expanduser(arg.strip()))
-                if path in self._pinned_files:
-                    self._pinned_files.remove(path)
-                    rel = os.path.relpath(path, self.cwd) if path.startswith(self.cwd) else path
-                    self.console.print(f"[yellow]Unpinned:[/] {rel}")
-                else:
-                    self.console.print(f"[dim]Not pinned: {arg}[/]")
-        elif command == "/alias":
-            aliases = self.settings.get("aliases", {})
-            if not arg:
-                if aliases:
-                    self.console.print("[bold]Command aliases:[/]")
-                    for short, full in sorted(aliases.items()):
-                        self.console.print(f"  [cyan]/{short}[/] → [dim]/{full}[/]")
-                else:
-                    self.console.print("[dim]No aliases. Usage: /alias <short> <command>[/]")
-            else:
-                parts2 = arg.split(None, 1)
-                if len(parts2) < 2:
-                    self.console.print("[dim]Usage: /alias <short> <command>[/]")
-                else:
-                    short, full = parts2[0].lstrip("/"), parts2[1].lstrip("/")
-                    aliases[short] = full
-                    self.settings["aliases"] = aliases
-                    save_settings(self.settings)
-                    self.console.print(f"[green]Alias set:[/] /{short} → /{full}")
-        elif command == "/unalias":
-            if not arg:
-                self.console.print("[dim]Usage: /unalias <name>[/]")
-            else:
-                name = arg.strip().lstrip("/")
-                aliases = self.settings.get("aliases", {})
-                if name in aliases:
-                    del aliases[name]
-                    self.settings["aliases"] = aliases
-                    save_settings(self.settings)
-                    self.console.print(f"[yellow]Removed alias:[/] /{name}")
-                else:
-                    self.console.print(f"[dim]No alias: /{name}[/]")
-        elif command == "/notify":
-            self._notify_enabled = not self._notify_enabled
-            state = "ON" if self._notify_enabled else "OFF"
-            self.console.print(f"[{'green' if self._notify_enabled else 'yellow'}]Desktop notifications {state}[/]")
-        elif command == "/optimizer":
-            self._optimizer_enabled = not self._optimizer_enabled
-            self.settings["optimizer"] = self._optimizer_enabled
-            save_settings(self.settings)
-            state = "ON" if self._optimizer_enabled else "OFF"
-            self.console.print(f"[{'green' if self._optimizer_enabled else 'yellow'}]Cost optimizer {state}[/]")
-        elif command == "/theme":
-            from config import THEMES
-            if not arg:
-                self.console.print("[bold]Available themes:[/]")
-                current = self.settings.get("theme", "dark")
-                for name in THEMES:
-                    marker = " ← current" if name == current else ""
-                    self.console.print(f"  [cyan]{name}[/]{' [dim]' + marker + '[/]' if marker else ''}")
-            else:
-                name = arg.strip().lower()
-                if name in THEMES:
-                    self.theme = THEMES[name]
-                    self.settings["theme"] = name
-                    save_settings(self.settings)
-                    self.console.print(f"[green]Theme set:[/] {name}")
-                else:
-                    self.console.print(f"[red]Unknown theme: {name}. Use /theme to list.[/]")
-        elif command == "/share":
-            self._share_session_html()
-        elif command == "/pr":
-            self._handle_gh("pr", arg)
-        elif command == "/review":
-            self._handle_gh("review", arg)
-        elif command == "/issue":
-            self._handle_gh("issue", arg)
-        elif command == "/init":
-            self._handle_init(arg)
-        elif command == "/plugins":
-            self._handle_plugins(arg)
-        elif command == "/agent":
-            self._handle_agent(arg)
-        elif command == "/agents":
-            self._handle_agents()
-        elif command == "/lsp":
-            self._handle_lsp(arg)
-        elif command == "/voice":
-            self._handle_voice(arg)
-        elif command == "/changelog":
-            version_filter = arg.strip()
-            for entry in CHANGELOG:
-                if version_filter and version_filter not in entry["version"]:
+                if not self.api_keys.get(pn, ""):
                     continue
-                lines = [f"[bold cyan]{entry['version']}[/] [dim]({entry['date']})[/]"]
-                for c in entry["changes"]:
-                    lines.append(f"  [green]\u2022[/] {c}")
-                self.console.print(Panel("\n".join(lines), border_style="blue"))
-        elif command == "/stats":
-            s = self._session_stats
-            elapsed = time.time() - s["start_time"]
-            mins = int(elapsed // 60)
-            secs = int(elapsed % 60)
-            total_tools = sum(s["tools_used"].values())
-            top_tools = sorted(s["tools_used"].items(), key=lambda x: -x[1])[:5]
-            lines = [
-                f"Session time:   {mins}m {secs}s",
-                f"Messages sent:  {s['messages_sent']}",
-                f"Tools used:     {total_tools}",
-                f"Files read:     {s['files_read']}",
-                f"Files edited:   {s['files_edited']}",
-                f"Commands run:   {s['commands_run']}",
-                f"Searches:       {s['searches']}",
-                f"Cost:           ${self.session_tokens.get('cost', 0):.4f}",
-            ]
-            if top_tools:
-                lines.append("")
-                lines.append("[bold]Top tools:[/]")
-                for name, count in top_tools:
-                    lines.append(f"  {name}: {count}")
-            self.console.print(Panel("\n".join(lines), title="Session Stats", border_style="blue"))
-        elif command == "/review-local":
+                self.console.print(f"[bold {pv['color']}]{pv['label']} API:[/]")
+                for alias, full in pv["aliases"].items():
+                    choices.append((alias, full, pn))
+                    marker = " [cyan]◀[/]" if full == self.model else ""
+                    self.console.print(f"  {len(choices)}. {alias} [dim]→ {full}[/]{marker}")
+                for m in extras.get(pn, []):
+                    choices.append((m, m, pn))
+                    marker = " [cyan]◀[/]" if m == self.model else ""
+                    self.console.print(f"  {len(choices)}. [dim]{m}[/] [dim](live)[/]{marker}")
+            self.console.print()
             try:
-                result = subprocess.run(["git", "diff", "--staged"], capture_output=True, text=True, timeout=10, cwd=self.cwd)
-                diff = result.stdout.strip()
-                label = "staged"
-                if not diff:
-                    result = subprocess.run(["git", "diff"], capture_output=True, text=True, timeout=10, cwd=self.cwd)
-                    diff = result.stdout.strip()
-                    label = "unstaged"
-                if not diff:
-                    self.console.print("[dim]No changes to review.[/]")
-                    return
-                self.console.print(f"[cyan]Reviewing {label} changes...[/]")
-                self._chat(
-                    f"Review this git diff for bugs, style issues, security concerns, and improvements. "
-                    f"Be concise but thorough. Group feedback by file.\n\n```diff\n{diff[:15000]}\n```"
-                )
-            except Exception as e:
-                self.console.print(f"[red]Error: {e}[/]")
-        elif command == "/test":
-            if not arg:
-                self.console.print("[dim]Usage: /test <file_path>[/]")
+                pick = Prompt.ask("[bold]Pick a model[/] (number or name, or 'skip')")
+            except (EOFError, KeyboardInterrupt):
+                self.console.print("\n[dim]Cancelled.[/]")
                 return
+            pick = pick.strip()
+            if pick.lower() in ("skip", ""):
+                return
+            if pick.isdigit() and 1 <= int(pick) <= len(choices):
+                alias, full, prov = choices[int(pick) - 1]
+                self.model = full
+                self.multi_models = []
+                if prov == "claude":
+                    self._stop_ollama()
+                    prov_str = "[yellow]Claude API[/]"
+                elif prov == "local":
+                    prov_str = "[green]Local[/]"
+                    self._ensure_ollama()
+                else:
+                    self._stop_ollama()
+                    prov_str = f"[{OPENAI_COMPAT_PROVIDERS[prov]['color']}]{OPENAI_COMPAT_PROVIDERS[prov]['label']} API[/]"
+                self.console.print(f"Switched to [cyan]{self.model}[/] ({prov_str}) [dim](single mode)[/]")
+                self.console.print("[dim]Use /multi all to go back to multi-model mode[/]")
+                return
+            else:
+                arg = pick
+        # Resolve alias to model name
+        new_model = arg
+        resolved_prov = None
+        if arg in CLAUDE_ALIASES:
+            if not self.claude_key:
+                self.console.print("[yellow]No Claude API key set.[/]")
+                key = Prompt.ask("[bold]Enter your Claude API key[/] (or 'skip' to cancel)")
+                if key.strip().lower() == "skip" or not key.strip():
+                    self.console.print("[dim]Cancelled. Staying on current model.[/]")
+                    return
+                self.claude_key = key.strip()
+                self.settings["claude_api_key"] = self.claude_key
+                save_settings(self.settings)
+                self.console.print("[green]API key saved![/]")
+            new_model = CLAUDE_ALIASES[arg]
+            resolved_prov = "claude"
+        else:
+            # Check all OpenAI-compat providers
+            for pn, pv in OPENAI_COMPAT_PROVIDERS.items():
+                if arg in pv["aliases"]:
+                    if not self.api_keys.get(pn, ""):
+                        self.console.print(f"[yellow]No {pv['label']} API key set.[/]")
+                        key = Prompt.ask(f"[bold]Enter your {pv['label']} API key[/] (or 'skip')")
+                        if key.strip().lower() == "skip" or not key.strip():
+                            self.console.print("[dim]Cancelled.[/]")
+                            return
+                        self.api_keys[pn] = key.strip()
+                        self.settings[pv["key_setting"]] = key.strip()
+                        if pn == "qwen":
+                            self.qwen_key = key.strip()
+                        save_settings(self.settings)
+                        self.console.print(f"[green]{pv['label']} API key saved![/]")
+                    new_model = pv["aliases"][arg]
+                    resolved_prov = pn
+                    break
+            if not resolved_prov:
+                if arg in MODEL_ALIASES:
+                    new_model = MODEL_ALIASES[arg]
+        self.model = new_model
+        self.multi_models = []
+        # Determine provider for display
+        if resolved_prov == "claude" or is_claude_model(self.model) or self._is_live_claude(self.model):
+            self._stop_ollama()
+            provider = "[yellow]Claude API[/]"
+        else:
+            _pn = self._get_provider_for_model(self.model)
+            if _pn:
+                self._stop_ollama()
+                provider = f"[{OPENAI_COMPAT_PROVIDERS[_pn]['color']}]{OPENAI_COMPAT_PROVIDERS[_pn]['label']} API[/]"
+            else:
+                provider = "[green]Local[/]"
+                self._ensure_ollama()
+        self.console.print(f"Switched to [cyan]{self.model}[/] ({provider}) [dim](single mode)[/]")
+        self.console.print("[dim]Use /multi all to go back to multi-model mode[/]")
+
+    def _cmd_multi(self, arg):
+        if not arg:
+            self.console.print("[red]Usage: /multi coder qwen reason  or  /multi all[/]")
+            return
+        if arg.strip().lower() == "all":
+            # Auto-discover all installed Ollama models
+            resolved = []
+            try:
+                resp = requests.get(f"{OLLAMA_URL}/api/tags", timeout=5)
+                resp.raise_for_status()
+                for m in resp.json().get("models", []):
+                    resolved.append(m["name"])
+            except Exception:
+                self.console.print("[red]Can't reach Ollama to list models.[/]")
+                return
+            if not resolved:
+                self.console.print("[yellow]No Ollama models found.[/]")
+                return
+            if len(resolved) < 2:
+                self.console.print("[yellow]Multi-model needs at least 2 models. Only 1 installed.[/]")
+                self.console.print(f"  • Pull more models or use [bold]/model {resolved[0]}[/] for single mode")
+                return
+        else:
+            names = arg.split()
+            resolved = []
+            for name in names:
+                if name in CLAUDE_ALIASES:
+                    if not self.claude_key:
+                        self.console.print(f"[red]{name} needs Claude API key. Use /key to add one.[/]")
+                        return
+                    resolved.append(CLAUDE_ALIASES[name])
+                elif get_openai_provider(name):
+                    _pn = get_openai_provider(name)
+                    _pv = OPENAI_COMPAT_PROVIDERS[_pn]
+                    if not self.api_keys.get(_pn, ""):
+                        self.console.print(f"[red]{name} needs {_pv['label']} API key. Use /key {_pn} to add one.[/]")
+                        return
+                    resolved.append(_pv["aliases"][name])
+                elif name in MODEL_ALIASES:
+                    resolved.append(MODEL_ALIASES[name])
+                else:
+                    resolved.append(name)
+        if len(resolved) < 2:
+            self.console.print("[yellow]Multi-model needs at least 2 models.[/]")
+            return
+        self.multi_models = resolved
+        names_str = ", ".join(f"[cyan]{m}[/]" for m in resolved)
+        self.console.print(f"Multi-model mode: {names_str}")
+        self.console.print("[dim]All models will answer each question. Use /single to go back.[/]")
+
+    def _cmd_single(self, arg):
+        self.multi_models = []
+        self.console.print(f"Single model mode: [cyan]{self.model}[/]")
+
+    def _cmd_models(self, arg):
+        self._list_models()
+
+    def _cmd_update(self, arg):
+        # Force an immediate model update/discovery check, bypassing the throttle.
+        self._skip_updates = False
+        self.settings["last_update_check"] = 0
+        self._check_updates(show_welcome=False)
+
+    def _cmd_delete(self, arg):
+        self._delete_model(arg)
+
+    def _cmd_pull(self, arg):
+        self._pull_model(arg)
+
+    def _cmd_clear(self, arg):
+        self.history = []
+        self._clear_session()
+        self.console.print("[dim]Conversation cleared.[/]")
+
+    def _cmd_memories(self, arg):
+        result = self.memory.list_all()
+        self.console.print(Panel(result, title="Memories", border_style="magenta"))
+
+    def _cmd_forget(self, arg):
+        if not arg:
+            self.console.print("[red]Usage: /forget <id>[/]")
+            return
+        try:
+            self.console.print(self.memory.delete(int(arg)))
+        except ValueError:
+            self.console.print("[red]ID must be a number.[/]")
+
+    def _cmd_scan(self, arg):
+        self._scan_project(os.path.expanduser(arg) if arg else self.cwd)
+
+    def _cmd_compact(self, arg):
+        self._compact()
+
+    def _cmd_context(self, arg):
+        ctx_path = self._get_project_context_path()
+        if os.path.isfile(ctx_path):
+            with open(ctx_path, "r") as f:
+                self.console.print(Panel(f.read(), title=f"Project Context ({self.cwd})", border_style="magenta"))
+        else:
+            self.console.print(f"[dim]No project context for {self.cwd}[/]")
+        self.console.print(f"[dim]File: {ctx_path}[/]")
+        self.console.print(f"[dim]Global: {CONTEXT_FILE}[/]")
+
+    def _cmd_key(self, arg):
+        self._setup_api_key(arg.strip().lower() if arg.strip() else None)
+
+    def _cmd_cd(self, arg):
+        path = os.path.expanduser(arg) if arg else os.path.expanduser("~")
+        if os.path.isdir(path):
+            self.cwd = os.path.abspath(path)
+            os.chdir(self.cwd)
+            self._detect_git()
+            self._load_kodiqaignore()
+            git_note = ""
+            if self.git_info:
+                git_note = f" (git: {self.git_info['branch']})"
+            self.console.print(f"[dim]Changed to {self.cwd}{git_note}[/]")
+        else:
+            self.console.print(f"[red]Not a directory: {path}[/]")
+
+    def _cmd_search(self, arg):
+        if not arg:
+            engine = get_search_engine()
+            g_key, g_cx = get_google_api_keys()
+            api_status = "[green]configured[/]" if (g_key and g_cx) else "[dim]not set[/]"
+            self.console.print(f"Search engine: [cyan]{engine}[/]")
+            self.console.print(f"Google API: {api_status}")
+            self.console.print("[dim]Usage: /search google | /search duckduckgo | /search api[/]")
+        elif arg.lower() in ("google", "g"):
+            set_search_engine("google")
+            self.console.print("[green]Switched to Google search (scraping, no API key)[/]")
+        elif arg.lower() in ("duckduckgo", "ddg", "duck"):
+            set_search_engine("duckduckgo")
+            self.console.print("[green]Switched to DuckDuckGo search[/]")
+        elif arg.lower() in ("api", "google_api", "gapi"):
+            g_key, g_cx = get_google_api_keys()
+            if not g_key or not g_cx:
+                self.console.print("[yellow]Google Custom Search API setup[/]")
+                self.console.print("[dim]Get API key: https://console.cloud.google.com/apis[/]")
+                self.console.print("[dim]Get Search Engine ID: https://programmablesearchengine.google.com/[/]")
+                try:
+                    api_key = Prompt.ask("\n[bold]Google API key[/] (or 'skip')")
+                    if api_key.strip().lower() == "skip":
+                        return
+                    cx = Prompt.ask("[bold]Search Engine ID (cx)[/]")
+                    if not cx.strip():
+                        return
+                    set_google_api_keys(api_key.strip(), cx.strip())
+                    self.settings["google_api_key"] = api_key.strip()
+                    self.settings["google_cx"] = cx.strip()
+                    save_settings(self.settings)
+                    set_search_engine("google_api")
+                    self.console.print("[green]Google API configured and set as search engine![/]")
+                except (EOFError, KeyboardInterrupt):
+                    return
+            else:
+                set_search_engine("google_api")
+                self.console.print("[green]Switched to Google API search (100 free/day)[/]")
+        else:
+            self.console.print("[red]Unknown engine. Use: /search google | /search duckduckgo | /search api[/]")
+
+    def _cmd_config(self, arg):
+        if arg.strip().lower() == "reload":
+            self.config = load_config()
+            set_hooks(self.config.get("hooks", {}))
+            self.console.print("[green]Config reloaded.[/]")
+        else:
+            self.console.print(Panel(
+                json.dumps(self.config, indent=2, default=list),
+                title="Config", border_style="blue",
+            ))
+            self.console.print(f"[dim]Edit: {CONFIG_FILE}[/]")
+            self.console.print(f"[dim]Reload: /config reload[/]")
+
+    def _cmd_tokens(self, arg):
+        st = self.session_tokens
+        # Estimate context usage
+        ctx_est = self._estimate_tokens()
+        limit = self._context_limit()
+        pct = ctx_est * 100 // limit if limit > 0 else 0
+        bar_len = 20
+        filled = pct * bar_len // 100
+        bar = "[green]" + "█" * filled + "[/][dim]" + "░" * (bar_len - filled) + "[/]"
+        self.console.print(Panel(
+            f"Input tokens:  {st['input']:,}\n"
+            f"Output tokens: {st['output']:,}\n"
+            f"Cache read:    {st['cache_read']:,}\n"
+            f"Cache create:  {st['cache_creation']:,}\n"
+            f"Total cost:    ${st['cost']:.4f}\n"
+            f"Context:       ~{ctx_est:,} / {limit:,} tokens ({pct}%)\n"
+            f"               {bar} {len(self.history)} messages",
+            title="Session Token Usage", border_style="blue",
+        ))
+
+    def _cmd_export(self, arg):
+        self._export_session()
+
+    def _cmd_checkpoint(self, arg):
+        name = arg.strip() if arg else f"cp_{len(self._checkpoints) + 1}"
+        self._save_checkpoint(name)
+
+    def _cmd_restore(self, arg):
+        if not arg:
+            # List checkpoints
+            if not self._checkpoints:
+                self.console.print("[dim]No checkpoints saved. Use /checkpoint <name> to create one.[/]")
+            else:
+                self.console.print("[bold]Checkpoints:[/]")
+                for cp_name in self._checkpoints:
+                    msgs = self._checkpoints[cp_name]["count"]
+                    self.console.print(f"  [cyan]{cp_name}[/] ({msgs} messages)")
+        else:
+            self._restore_checkpoint(arg.strip())
+
+    def _cmd_env(self, arg):
+        lines = [f"  [cyan]{k}[/]: {v}" for k, v in self.shell_env.items()]
+        self.console.print(Panel("\n".join(lines), title="Shell Environment", border_style="blue"))
+
+    def _cmd_verbose(self, arg):
+        self.compact_mode = not self.compact_mode
+        if self.compact_mode:
+            self.console.print("[green]Compact mode ON[/] — code blocks hidden during streaming")
+        else:
+            self.console.print("[yellow]Verbose mode ON[/] — full output shown during streaming")
+
+    def _cmd_mode(self, arg):
+        if not arg:
+            mode_desc = {"default": "confirm all writes/edits/commands",
+                         "relaxed": "auto-approve file ops, confirm commands only",
+                         "auto": "no confirmations"}
+            self.console.print(f"Current mode: [bold cyan]{self.permission_mode}[/] — {mode_desc[self.permission_mode]}")
+            self.console.print("[dim]Usage: /mode default | /mode relaxed | /mode auto[/]")
+        elif arg.strip().lower() in ("default", "relaxed", "auto"):
+            self.permission_mode = arg.strip().lower()
+            labels = {"default": "[green]Default[/] — confirm all writes/edits/commands",
+                      "relaxed": "[yellow]Relaxed[/] — auto-approve file ops, confirm commands only",
+                      "auto": "[red]Auto[/] — no confirmations (be careful!)"}
+            self.console.print(f"  Permission mode: {labels[self.permission_mode]}")
+        else:
+            self.console.print("[red]Unknown mode. Use: default, relaxed, or auto[/]")
+
+    def _cmd_plan(self, arg):
+        if self.plan_mode:
+            self.console.print("[dim]Already in plan mode. Type your request to get a plan.[/]")
+        else:
+            self.plan_mode = True
+            self._pending_plan = None
+            self.console.print(Panel(
+                "[bold]Plan mode ON[/]\n\n"
+                "The AI will now:\n"
+                "  1. Explore the codebase\n"
+                "  2. Design a step-by-step plan\n"
+                "  3. Show the plan for your approval\n"
+                "  4. Only implement after you approve\n\n"
+                "Type your request, or [bold]/plan off[/] to exit plan mode.",
+                border_style="magenta", title="Plan Mode",
+            ))
+        if arg and arg.strip().lower() == "off":
+            self.plan_mode = False
+            self._pending_plan = None
+            self.console.print("[dim]Plan mode OFF — back to normal mode.[/]")
+
+    def _cmd_architect(self, arg):
+        self._handle_architect(arg)
+
+    def _cmd_accept(self, arg):
+        self.batch_edits = not self.batch_edits
+        if self.batch_edits:
+            self.console.print("[green]Batch edit review ON[/] — edits queued for review before applying")
+        else:
+            self.console.print("[yellow]Batch edit review OFF[/] — edits applied one at a time")
+
+    def _cmd_branch(self, arg):
+        self._handle_branch(arg.strip())
+
+    def _cmd_mcp(self, arg):
+        self._handle_mcp(arg.strip())
+
+    def _cmd_autocommit(self, arg):
+        self.auto_commit = not self.auto_commit
+        self.settings["auto_commit"] = self.auto_commit
+        save_settings(self.settings)
+        if self.auto_commit:
+            self.console.print("[green]Auto-commit ON[/] — git commit after each AI edit")
+        else:
+            self.console.print("[yellow]Auto-commit OFF[/]")
+
+    def _cmd_budget(self, arg):
+        if arg:
+            try:
+                self.budget_limit = float(arg)
+                self._budget_exceeded = False
+                self.console.print(f"[green]Budget set to ${self.budget_limit:.2f}[/]")
+            except ValueError:
+                self.console.print("[red]Usage: /budget <amount> (e.g. /budget 5)[/]")
+        else:
+            spent = self.session_tokens["cost"]
+            if self.budget_limit > 0:
+                pct = (spent / self.budget_limit) * 100
+                bar_w = 20
+                filled = int(bar_w * min(pct, 100) / 100)
+                bar = "█" * filled + "░" * (bar_w - filled)
+                color = "green" if pct < 80 else ("yellow" if pct < 100 else "red")
+                self.console.print(f"Budget: [{color}]{bar}[/] ${spent:.4f} / ${self.budget_limit:.2f} ({pct:.0f}%)")
+            else:
+                self.console.print(f"Session cost: ${spent:.4f} [dim](no budget set — /budget <amount>)[/]")
+
+    def _cmd_undo(self, arg):
+        if arg:
+            path = os.path.abspath(os.path.expanduser(arg))
+            result = do_undo_edit(path)
+            self.console.print(result)
+        else:
+            files_with_undo = [(p, len(buf)) for p, buf in _undo_buffer.items() if buf]
+            if files_with_undo:
+                self.console.print("[bold]Files with undo history:[/]")
+                for p, count in files_with_undo:
+                    rel = os.path.relpath(p, self.cwd) if p.startswith(self.cwd) else p
+                    self.console.print(f"  [cyan]{rel}[/] [dim]({count} undo steps)[/]")
+                self.console.print("[dim]Usage: /undo <path>[/]")
+            else:
+                self.console.print("[dim]No undo history yet.[/]")
+
+    def _cmd_redo(self, arg):
+        if arg:
+            path = os.path.abspath(os.path.expanduser(arg))
+            result = do_redo_edit(path)
+            self.console.print(result)
+        else:
+            files_with_redo = redo_paths()
+            if files_with_redo:
+                self.console.print("[bold]Files with redo history:[/]")
+                for p, count in files_with_redo:
+                    rel = os.path.relpath(p, self.cwd) if p.startswith(self.cwd) else p
+                    self.console.print(f"  [cyan]{rel}[/] [dim]({count} redo steps)[/]")
+                self.console.print("[dim]Usage: /redo <path>[/]")
+            else:
+                self.console.print("[dim]Nothing to redo. Use /undo first.[/]")
+
+    def _cmd_diff(self, arg):
+        try:
+            cmd = ["git", "diff"] + (arg.split() if arg else [])
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            output = result.stdout.strip()
+            if output:
+                self.console.print(Panel(output, title="git diff", border_style="cyan"))
+            else:
+                self.console.print("[dim]No uncommitted changes.[/]")
+        except Exception as e:
+            self.console.print(f"[red]Error: {e}[/]")
+
+    def _cmd_lint(self, arg):
+        if not arg:
+            if self.lint_cmd:
+                auto = " [cyan](auto-fix ON)[/]" if self.lint_auto_fix else ""
+                self.console.print(f"Lint command: [cyan]{self.lint_cmd}[/]{auto}")
+            else:
+                self.console.print("[dim]No lint command set. Usage: /lint <command>[/]")
+            self.console.print("[dim]  /lint auto — toggle auto-fix (AI fixes lint errors automatically)[/]")
+        elif arg.strip().lower() == "off":
+            self.lint_cmd = ""
+            self.lint_auto_fix = False
+            self.console.print("[yellow]Auto-lint OFF[/]")
+        elif arg.strip().lower() == "auto":
+            self.lint_auto_fix = not self.lint_auto_fix
+            state = "ON" if self.lint_auto_fix else "OFF"
+            color = "green" if self.lint_auto_fix else "yellow"
+            self.console.print(f"[{color}]Auto lint-fix {state}[/] (max 3 iterations)")
+        else:
+            self.lint_cmd = arg.strip()
+            self.console.print(f"[green]Auto-lint ON[/] — running [cyan]{self.lint_cmd}[/] after edits")
+
+    def _cmd_sandbox(self, arg):
+        if arg and arg.strip().lower() == "on":
+            self.sandbox_enabled = True
+            from actions import set_sandbox
+            set_sandbox(True)
+            self.console.print("[green]Sandbox ON[/] — commands restricted to cwd + /tmp")
+        elif arg and arg.strip().lower() == "off":
+            self.sandbox_enabled = False
+            from actions import set_sandbox
+            set_sandbox(False)
+            self.console.print("[yellow]Sandbox OFF[/]")
+        else:
+            state = "[green]ON[/]" if self.sandbox_enabled else "[dim]OFF[/]"
+            self.console.print(f"Sandbox: {state}")
+            self.console.print("[dim]  /sandbox on | /sandbox off[/]")
+
+    def _cmd_pin(self, arg):
+        if not arg:
+            if self._pinned_files:
+                self.console.print("[bold]Pinned files:[/]")
+                for p in self._pinned_files:
+                    rel = os.path.relpath(p, self.cwd) if p.startswith(self.cwd) else p
+                    try:
+                        size = os.path.getsize(p)
+                        self.console.print(f"  [cyan]{rel}[/] [dim]({size:,} bytes)[/]")
+                    except OSError:
+                        self.console.print(f"  [cyan]{rel}[/] [dim](missing)[/]")
+            else:
+                self.console.print("[dim]No pinned files. Usage: /pin <path>[/]")
+        else:
             path = os.path.abspath(os.path.expanduser(arg.strip()))
             if not os.path.isfile(path):
                 self.console.print(f"[red]File not found: {arg}[/]")
-                return
-            ext = os.path.splitext(path)[1]
-            frameworks = {".py": "pytest", ".ts": "jest", ".tsx": "jest", ".js": "jest", ".go": "go test"}
-            fw = frameworks.get(ext, "appropriate test framework")
-            rel = os.path.relpath(path, self.cwd)
-            self._chat(
-                f"Read {rel} and generate comprehensive unit tests for it using {fw}. "
-                f"Create a test file in the tests/ directory (or adjacent __tests__/ for JS/TS). "
-                f"Cover all public functions/methods, edge cases, and error paths. "
-                f"Follow existing test patterns if any tests exist in this project."
-            )
-        elif command == "/test-fix":
-            self._handle_test_fix(arg)
-        elif command == "/persona":
-            if not arg:
-                if self._persona:
-                    self.console.print(f"Current persona: [cyan]{self._persona}[/]")
-                self.console.print("[bold]Available personas:[/]")
-                for name, p in PERSONAS.items():
-                    marker = " [dim]<- active[/]" if name == self._persona else ""
-                    self.console.print(f"  [cyan]{name}[/] \u2014 {p['name']}{marker}")
-                self.console.print(f"  [cyan]off[/] \u2014 reset to default")
-            elif arg.strip().lower() == "off":
-                self._persona = None
-                self.console.print("[yellow]Persona reset to default.[/]")
-            elif arg.strip() in PERSONAS:
-                self._persona = arg.strip()
-                self.console.print(f"[green]Persona:[/] {PERSONAS[self._persona]['name']}")
+            elif path in self._pinned_files:
+                self.console.print(f"[dim]Already pinned: {arg}[/]")
             else:
-                self.console.print(f"[red]Unknown persona: {arg}. Use /persona to list.[/]")
-        elif command == "/patch":
-            try:
-                result = subprocess.run(["pbpaste"], capture_output=True, text=True, timeout=5)
-                clip = result.stdout
-            except Exception:
-                self.console.print("[red]Clipboard not available.[/]")
-                return
-            if not clip.strip():
-                self.console.print("[dim]Clipboard is empty.[/]")
-                return
-            if not any(clip.lstrip().startswith(p) for p in ("diff ", "--- ", "@@", "Index:")):
-                self.console.print("[yellow]Clipboard doesn't look like a diff/patch.[/]")
-                self.console.print("[dim]Expected unified diff format (from git diff, etc.)[/]")
-                return
-            self._chat(
-                f"Apply this patch to the appropriate file(s). Read the target files first, "
-                f"then apply the changes using edit_file or diff_apply.\n\n```diff\n{clip[:15000]}\n```"
-            )
-        elif command == "/profile":
-            self._handle_profile(arg)
-        elif command == "/refactor":
-            if not arg:
-                self.console.print("[dim]Usage:[/]")
-                self.console.print("  [cyan]/refactor rename <old> <new>[/] \u2014 rename symbol across files")
-                self.console.print("  [cyan]/refactor extract <description>[/] \u2014 extract code to function/file")
-                self.console.print("  [cyan]/refactor <description>[/] \u2014 general refactoring")
-                return
-            parts = arg.split(None, 2)
-            sub = parts[0]
-            if sub == "rename" and len(parts) >= 3:
-                old_name, new_name = parts[1], parts[2]
-                self._chat(
-                    f"Refactor: rename '{old_name}' to '{new_name}' across the entire project.\n"
-                    f"1. Use grep to find all occurrences of '{old_name}' in {self.cwd}\n"
-                    f"2. Read each file that contains it\n"
-                    f"3. Use edit_file or search_replace_all to rename (be careful about partial matches)\n"
-                    f"4. Update imports, comments, and string references\n"
-                    f"5. Show a summary of all changes"
-                )
-            elif sub == "extract":
-                desc = " ".join(parts[1:]) if len(parts) > 1 else ""
-                self._chat(f"Refactor: extract code \u2014 {desc}. Read the relevant files, identify the code to extract, create the new function/module, and update all call sites.")
-            else:
-                self._chat(f"Refactor this codebase: {arg}. Use grep to find relevant files, read them, and apply the refactoring using edit_file or multi_edit.")
-        elif command == "/history":
-            self._handle_history(arg)
-        elif command == "/watch":
-            self._handle_watch(arg)
-        elif command == "/embed":
-            self._handle_embed(arg)
-        elif command == "/rag":
-            if not arg:
-                self.console.print("[dim]Usage: /rag <question> \u2014 search codebase with embeddings + AI[/]")
-                return
-            self._handle_rag(arg)
-        elif command == "/debug":
-            if not arg:
-                self.console.print("[dim]Usage: /debug <script> [args] \u2014 run script, catch errors, debug with AI[/]")
-                return
-            self._handle_debug(arg)
-        elif command == "/diagram":
-            if not arg:
-                self.console.print("[dim]Usage: /diagram <description>[/]")
-                self.console.print("[dim]Examples:[/]")
-                self.console.print("  [cyan]/diagram class hierarchy for this project[/]")
-                self.console.print("  [cyan]/diagram sequence diagram for login flow[/]")
-                return
-            self._chat(
-                f"Generate a Mermaid diagram for: {arg}\n\n"
-                f"Requirements:\n"
-                f"- Output a single ```mermaid code block\n"
-                f"- Use appropriate diagram type (flowchart, sequence, class, ER, etc.)\n"
-                f"- Keep it clear and readable\n"
-                f"- If describing this project's code, read the relevant files first"
-            )
-        elif command == "/map":
-            self._handle_map(arg)
-        elif command == "/team":
-            self._handle_team(arg)
-        elif command == "/teams":
-            self._handle_teams()
+                self._pinned_files.append(path)
+                rel = os.path.relpath(path, self.cwd) if path.startswith(self.cwd) else path
+                self.console.print(f"[green]Pinned:[/] {rel}")
+
+    def _cmd_unpin(self, arg):
+        if not arg:
+            self.console.print("[dim]Usage: /unpin <path>[/]")
         else:
-            # Check user-defined aliases before giving up
-            aliases = self.settings.get("aliases", {})
-            cmd_name = command.lstrip("/")
-            if cmd_name in aliases:
-                expanded = "/" + aliases[cmd_name]
-                if arg:
-                    expanded += " " + arg
-                self._handle_slash(expanded)
+            path = os.path.abspath(os.path.expanduser(arg.strip()))
+            if path in self._pinned_files:
+                self._pinned_files.remove(path)
+                rel = os.path.relpath(path, self.cwd) if path.startswith(self.cwd) else path
+                self.console.print(f"[yellow]Unpinned:[/] {rel}")
             else:
-                self.console.print(f"[red]Unknown command: {command}. Type /help[/]")
+                self.console.print(f"[dim]Not pinned: {arg}[/]")
+
+    def _cmd_alias(self, arg):
+        aliases = self.settings.get("aliases", {})
+        if not arg:
+            if aliases:
+                self.console.print("[bold]Command aliases:[/]")
+                for short, full in sorted(aliases.items()):
+                    self.console.print(f"  [cyan]/{short}[/] → [dim]/{full}[/]")
+            else:
+                self.console.print("[dim]No aliases. Usage: /alias <short> <command>[/]")
+        else:
+            parts2 = arg.split(None, 1)
+            if len(parts2) < 2:
+                self.console.print("[dim]Usage: /alias <short> <command>[/]")
+            else:
+                short, full = parts2[0].lstrip("/"), parts2[1].lstrip("/")
+                aliases[short] = full
+                self.settings["aliases"] = aliases
+                save_settings(self.settings)
+                self.console.print(f"[green]Alias set:[/] /{short} → /{full}")
+
+    def _cmd_unalias(self, arg):
+        if not arg:
+            self.console.print("[dim]Usage: /unalias <name>[/]")
+        else:
+            name = arg.strip().lstrip("/")
+            aliases = self.settings.get("aliases", {})
+            if name in aliases:
+                del aliases[name]
+                self.settings["aliases"] = aliases
+                save_settings(self.settings)
+                self.console.print(f"[yellow]Removed alias:[/] /{name}")
+            else:
+                self.console.print(f"[dim]No alias: /{name}[/]")
+
+    def _cmd_notify(self, arg):
+        self._notify_enabled = not self._notify_enabled
+        state = "ON" if self._notify_enabled else "OFF"
+        self.console.print(f"[{'green' if self._notify_enabled else 'yellow'}]Desktop notifications {state}[/]")
+
+    def _cmd_optimizer(self, arg):
+        self._optimizer_enabled = not self._optimizer_enabled
+        self.settings["optimizer"] = self._optimizer_enabled
+        save_settings(self.settings)
+        state = "ON" if self._optimizer_enabled else "OFF"
+        self.console.print(f"[{'green' if self._optimizer_enabled else 'yellow'}]Cost optimizer {state}[/]")
+
+    def _cmd_theme(self, arg):
+        from config import THEMES
+        if not arg:
+            self.console.print("[bold]Available themes:[/]")
+            current = self.settings.get("theme", "dark")
+            for name in THEMES:
+                marker = " ← current" if name == current else ""
+                self.console.print(f"  [cyan]{name}[/]{' [dim]' + marker + '[/]' if marker else ''}")
+        else:
+            name = arg.strip().lower()
+            if name in THEMES:
+                self.theme = THEMES[name]
+                self.settings["theme"] = name
+                save_settings(self.settings)
+                self.console.print(f"[green]Theme set:[/] {name}")
+            else:
+                self.console.print(f"[red]Unknown theme: {name}. Use /theme to list.[/]")
+
+    def _cmd_share(self, arg):
+        self._share_session_html()
+
+    def _cmd_pr(self, arg):
+        self._handle_gh("pr", arg)
+
+    def _cmd_review(self, arg):
+        self._handle_gh("review", arg)
+
+    def _cmd_issue(self, arg):
+        self._handle_gh("issue", arg)
+
+    def _cmd_init(self, arg):
+        self._handle_init(arg)
+
+    def _cmd_plugins(self, arg):
+        self._handle_plugins(arg)
+
+    def _cmd_agent(self, arg):
+        self._handle_agent(arg)
+
+    def _cmd_agents(self, arg):
+        self._handle_agents()
+
+    def _cmd_lsp(self, arg):
+        self._handle_lsp(arg)
+
+    def _cmd_voice(self, arg):
+        self._handle_voice(arg)
+
+    def _cmd_changelog(self, arg):
+        version_filter = arg.strip()
+        for entry in CHANGELOG:
+            if version_filter and version_filter not in entry["version"]:
+                continue
+            lines = [f"[bold cyan]{entry['version']}[/] [dim]({entry['date']})[/]"]
+            for c in entry["changes"]:
+                lines.append(f"  [green]\u2022[/] {c}")
+            self.console.print(Panel("\n".join(lines), border_style="blue"))
+
+    def _cmd_stats(self, arg):
+        s = self._session_stats
+        elapsed = time.time() - s["start_time"]
+        mins = int(elapsed // 60)
+        secs = int(elapsed % 60)
+        total_tools = sum(s["tools_used"].values())
+        top_tools = sorted(s["tools_used"].items(), key=lambda x: -x[1])[:5]
+        lines = [
+            f"Session time:   {mins}m {secs}s",
+            f"Messages sent:  {s['messages_sent']}",
+            f"Tools used:     {total_tools}",
+            f"Files read:     {s['files_read']}",
+            f"Files edited:   {s['files_edited']}",
+            f"Commands run:   {s['commands_run']}",
+            f"Searches:       {s['searches']}",
+            f"Cost:           ${self.session_tokens.get('cost', 0):.4f}",
+        ]
+        if top_tools:
+            lines.append("")
+            lines.append("[bold]Top tools:[/]")
+            for name, count in top_tools:
+                lines.append(f"  {name}: {count}")
+        self.console.print(Panel("\n".join(lines), title="Session Stats", border_style="blue"))
+
+    def _cmd_review_local(self, arg):
+        try:
+            result = subprocess.run(["git", "diff", "--staged"], capture_output=True, text=True, timeout=10, cwd=self.cwd)
+            diff = result.stdout.strip()
+            label = "staged"
+            if not diff:
+                result = subprocess.run(["git", "diff"], capture_output=True, text=True, timeout=10, cwd=self.cwd)
+                diff = result.stdout.strip()
+                label = "unstaged"
+            if not diff:
+                self.console.print("[dim]No changes to review.[/]")
+                return
+            self.console.print(f"[cyan]Reviewing {label} changes...[/]")
+            self._chat(
+                f"Review this git diff for bugs, style issues, security concerns, and improvements. "
+                f"Be concise but thorough. Group feedback by file.\n\n```diff\n{diff[:15000]}\n```"
+            )
+        except Exception as e:
+            self.console.print(f"[red]Error: {e}[/]")
+
+    def _cmd_test(self, arg):
+        if not arg:
+            self.console.print("[dim]Usage: /test <file_path>[/]")
+            return
+        path = os.path.abspath(os.path.expanduser(arg.strip()))
+        if not os.path.isfile(path):
+            self.console.print(f"[red]File not found: {arg}[/]")
+            return
+        ext = os.path.splitext(path)[1]
+        frameworks = {".py": "pytest", ".ts": "jest", ".tsx": "jest", ".js": "jest", ".go": "go test"}
+        fw = frameworks.get(ext, "appropriate test framework")
+        rel = os.path.relpath(path, self.cwd)
+        self._chat(
+            f"Read {rel} and generate comprehensive unit tests for it using {fw}. "
+            f"Create a test file in the tests/ directory (or adjacent __tests__/ for JS/TS). "
+            f"Cover all public functions/methods, edge cases, and error paths. "
+            f"Follow existing test patterns if any tests exist in this project."
+        )
+
+    def _cmd_test_fix(self, arg):
+        self._handle_test_fix(arg)
+
+    def _cmd_persona(self, arg):
+        if not arg:
+            if self._persona:
+                self.console.print(f"Current persona: [cyan]{self._persona}[/]")
+            self.console.print("[bold]Available personas:[/]")
+            for name, p in PERSONAS.items():
+                marker = " [dim]<- active[/]" if name == self._persona else ""
+                self.console.print(f"  [cyan]{name}[/] \u2014 {p['name']}{marker}")
+            self.console.print(f"  [cyan]off[/] \u2014 reset to default")
+        elif arg.strip().lower() == "off":
+            self._persona = None
+            self.console.print("[yellow]Persona reset to default.[/]")
+        elif arg.strip() in PERSONAS:
+            self._persona = arg.strip()
+            self.console.print(f"[green]Persona:[/] {PERSONAS[self._persona]['name']}")
+        else:
+            self.console.print(f"[red]Unknown persona: {arg}. Use /persona to list.[/]")
+
+    def _cmd_patch(self, arg):
+        try:
+            result = subprocess.run(["pbpaste"], capture_output=True, text=True, timeout=5)
+            clip = result.stdout
+        except Exception:
+            self.console.print("[red]Clipboard not available.[/]")
+            return
+        if not clip.strip():
+            self.console.print("[dim]Clipboard is empty.[/]")
+            return
+        if not any(clip.lstrip().startswith(p) for p in ("diff ", "--- ", "@@", "Index:")):
+            self.console.print("[yellow]Clipboard doesn't look like a diff/patch.[/]")
+            self.console.print("[dim]Expected unified diff format (from git diff, etc.)[/]")
+            return
+        self._chat(
+            f"Apply this patch to the appropriate file(s). Read the target files first, "
+            f"then apply the changes using edit_file or diff_apply.\n\n```diff\n{clip[:15000]}\n```"
+        )
+
+    def _cmd_profile(self, arg):
+        self._handle_profile(arg)
+
+    def _cmd_refactor(self, arg):
+        if not arg:
+            self.console.print("[dim]Usage:[/]")
+            self.console.print("  [cyan]/refactor rename <old> <new>[/] \u2014 rename symbol across files")
+            self.console.print("  [cyan]/refactor extract <description>[/] \u2014 extract code to function/file")
+            self.console.print("  [cyan]/refactor <description>[/] \u2014 general refactoring")
+            return
+        parts = arg.split(None, 2)
+        sub = parts[0]
+        if sub == "rename" and len(parts) >= 3:
+            old_name, new_name = parts[1], parts[2]
+            self._chat(
+                f"Refactor: rename '{old_name}' to '{new_name}' across the entire project.\n"
+                f"1. Use grep to find all occurrences of '{old_name}' in {self.cwd}\n"
+                f"2. Read each file that contains it\n"
+                f"3. Use edit_file or search_replace_all to rename (be careful about partial matches)\n"
+                f"4. Update imports, comments, and string references\n"
+                f"5. Show a summary of all changes"
+            )
+        elif sub == "extract":
+            desc = " ".join(parts[1:]) if len(parts) > 1 else ""
+            self._chat(f"Refactor: extract code \u2014 {desc}. Read the relevant files, identify the code to extract, create the new function/module, and update all call sites.")
+        else:
+            self._chat(f"Refactor this codebase: {arg}. Use grep to find relevant files, read them, and apply the refactoring using edit_file or multi_edit.")
+
+    def _cmd_history(self, arg):
+        self._handle_history(arg)
+
+    def _cmd_watch(self, arg):
+        self._handle_watch(arg)
+
+    def _cmd_embed(self, arg):
+        self._handle_embed(arg)
+
+    def _cmd_rag(self, arg):
+        if not arg:
+            self.console.print("[dim]Usage: /rag <question> \u2014 search codebase with embeddings + AI[/]")
+            return
+        self._handle_rag(arg)
+
+    def _cmd_debug(self, arg):
+        if not arg:
+            self.console.print("[dim]Usage: /debug <script> [args] \u2014 run script, catch errors, debug with AI[/]")
+            return
+        self._handle_debug(arg)
+
+    def _cmd_diagram(self, arg):
+        if not arg:
+            self.console.print("[dim]Usage: /diagram <description>[/]")
+            self.console.print("[dim]Examples:[/]")
+            self.console.print("  [cyan]/diagram class hierarchy for this project[/]")
+            self.console.print("  [cyan]/diagram sequence diagram for login flow[/]")
+            return
+        self._chat(
+            f"Generate a Mermaid diagram for: {arg}\n\n"
+            f"Requirements:\n"
+            f"- Output a single ```mermaid code block\n"
+            f"- Use appropriate diagram type (flowchart, sequence, class, ER, etc.)\n"
+            f"- Keep it clear and readable\n"
+            f"- If describing this project's code, read the relevant files first"
+        )
+
+    def _cmd_map(self, arg):
+        self._handle_map(arg)
+
+    def _cmd_team(self, arg):
+        self._handle_team(arg)
+
+    def _cmd_teams(self, arg):
+        self._handle_teams()
 
     def _setup_api_key(self, provider=None):
         if provider == "claude":

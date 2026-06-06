@@ -245,6 +245,76 @@ class TestRedoCommand:
         assert "/redo" in Kodiqa._SLASH_COMMANDS
 
 
+class TestCommandRegistry:
+    """The command registry is the single source of truth for dispatch, the
+    autocomplete list, and /help — these tests guard against drift."""
+
+    def test_every_handler_is_a_real_method(self):
+        from kodiqa import Kodiqa
+        for name, handler in Kodiqa._COMMAND_HANDLERS.items():
+            assert callable(getattr(Kodiqa, handler, None)), f"{name} -> {handler} missing"
+
+    def test_slash_commands_derived_from_handlers(self):
+        from kodiqa import Kodiqa
+        assert Kodiqa._SLASH_COMMANDS == sorted(Kodiqa._COMMAND_HANDLERS)
+
+    def test_handlers_derived_from_specs(self):
+        from kodiqa import Kodiqa
+        expected = {n: spec[2] for spec in Kodiqa._COMMAND_SPECS for n in (spec[0], *spec[1])}
+        assert Kodiqa._COMMAND_HANDLERS == expected
+
+    def test_specs_have_no_duplicate_names(self):
+        from kodiqa import Kodiqa
+        names = []
+        for spec in Kodiqa._COMMAND_SPECS:
+            names.append(spec[0])
+            names.extend(spec[1])
+        assert len(names) == len(set(names)), "duplicate command name in _COMMAND_SPECS"
+
+    def test_all_names_start_with_slash(self):
+        from kodiqa import Kodiqa
+        for spec in Kodiqa._COMMAND_SPECS:
+            for n in (spec[0], *spec[1]):
+                assert n.startswith("/"), n
+
+    def test_known_commands_present(self):
+        from kodiqa import Kodiqa
+        for c in ("/help", "/quit", "/model", "/redo", "/undo", "/mcp", "/team", "/exit", "/rm"):
+            assert c in Kodiqa._COMMAND_HANDLERS
+
+    def test_dispatch_routes_to_handler(self):
+        from kodiqa import Kodiqa
+        called = {}
+        k = MagicMock(spec=Kodiqa)
+        k._COMMAND_HANDLERS = Kodiqa._COMMAND_HANDLERS
+        k.settings = {}
+        k._cmd_verbose = lambda arg: called.setdefault("verbose", arg)
+        Kodiqa._handle_slash(k, "/verbose")
+        assert "verbose" in called
+
+    def test_dispatch_passes_arg(self):
+        from kodiqa import Kodiqa
+        captured = {}
+        k = MagicMock(spec=Kodiqa)
+        k._COMMAND_HANDLERS = Kodiqa._COMMAND_HANDLERS
+        k.settings = {}
+        k._cmd_model = lambda arg: captured.setdefault("arg", arg)
+        Kodiqa._handle_slash(k, "/model claude")
+        assert captured["arg"] == "claude"
+
+    def test_user_alias_expansion(self):
+        from kodiqa import Kodiqa
+        captured = {}
+        k = MagicMock(spec=Kodiqa)
+        k._COMMAND_HANDLERS = Kodiqa._COMMAND_HANDLERS
+        k.settings = {"aliases": {"co": "model claude"}}
+        k._cmd_model = lambda arg: captured.setdefault("arg", arg)
+        k._handle_slash = lambda cmd: Kodiqa._handle_slash(k, cmd)  # real recursion
+        # /co is not a real command → falls through to user alias → /model claude
+        Kodiqa._handle_slash(k, "/co")
+        assert captured.get("arg") == "claude"
+
+
 class TestLiveTicker:
     """StreamWriter's live cost/token ticker."""
 

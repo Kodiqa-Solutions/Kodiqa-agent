@@ -4,6 +4,16 @@ All notable changes to Kodiqa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.7.1] - 2026-06-06
+
+Internal refactor — no user-facing behavior change (only `/help` has a nicer grouped layout).
+
+### Changed
+- **Command dispatch is now a registry.** The ~850-line `if/elif` chain in `_handle_slash` is replaced by an 18-line dispatcher over a `_COMMAND_HANDLERS` table; each of the 73 commands is its own `_cmd_*` method. A single `_COMMAND_SPECS` registry (name, aliases, handler, group, args, description) is the source of truth — the dispatch table, the tab-completion list (`_SLASH_COMMANDS`), and `/help` all derive from it, so they can no longer drift out of sync. Adding a command is now two steps (a method + one registry row).
+
+### Tests
+- Added `TestCommandRegistry` integrity tests (every handler resolves to a real method, lists derive correctly, dispatch routes and passes args, user-alias expansion). 326 total.
+
 ## [3.7.0] - 2026-06-06
 
 Quick-win batch — session resume, redo, live cost ticker, diffstat, and a friendlier first run.
