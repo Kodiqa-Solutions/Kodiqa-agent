@@ -1574,10 +1574,28 @@ class Kodiqa:
                 # Build numbered list of all available models
                 choices = []
                 self.console.print("[bold green]Local (Ollama):[/]")
-                for alias, full in MODEL_ALIASES.items():
-                    choices.append((alias, full, "local"))
-                    marker = " [cyan]◀[/]" if full == self.model else ""
-                    self.console.print(f"  {len(choices)}. {alias} [dim]→ {full}[/]{marker}")
+                installed_local = self._installed_ollama_models()
+                if installed_local is None:
+                    # Ollama unreachable — fall back to the static alias list.
+                    for alias, full in MODEL_ALIASES.items():
+                        choices.append((alias, full, "local"))
+                        marker = " [cyan]◀[/]" if full == self.model else ""
+                        self.console.print(f"  {len(choices)}. {alias} [dim]→ {full}[/]{marker}")
+                elif not installed_local:
+                    self.console.print("  [dim]No local models installed. Use /pull <model> to download one.[/]")
+                else:
+                    # Show what's actually installed; annotate with a friendly alias when one matches.
+                    def _norm(n):
+                        return n[:-7] if n.endswith(":latest") else n
+                    alias_for = {}
+                    for a, full in MODEL_ALIASES.items():
+                        alias_for.setdefault(_norm(full), a)
+                    for name, size_str in installed_local:
+                        choices.append((name, name, "local"))
+                        a = alias_for.get(_norm(name))
+                        alias_hint = f" [dim](/{a})[/]" if a else ""
+                        marker = " [cyan]◀[/]" if _norm(name) == _norm(self.model) else ""
+                        self.console.print(f"  {len(choices)}. [cyan]{name}[/] [dim]({size_str})[/]{alias_hint}{marker}")
                 extras = self._get_api_model_choices()
                 if self.claude_key:
                     self.console.print("[bold yellow]Claude API:[/]")

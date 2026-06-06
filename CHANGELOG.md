@@ -4,6 +4,11 @@ All notable changes to Kodiqa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.4.1] - 2026-06-06
+
+### Fixed
+- `/model` picker now lists the models actually installed in Ollama (with their friendly alias, e.g. `/coder`) instead of the static `MODEL_ALIASES` list — so deleted models no longer appear. Falls back to the alias list if Ollama is unreachable, and shows a hint when no local models are installed. Now consistent with `/models`.
+
 ## [3.4.0] - 2026-06-06
 
 ### Fixed
