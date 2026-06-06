@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Kodiqa — AI Coding Agent</title>
-<meta name="description" content="The AI coding agent that runs anywhere — free locally with Ollama, or supercharged by 7 cloud APIs. 26 tools, 69 commands, Python 3.9+.">
+<meta name="description" content="The AI coding agent that runs anywhere — free locally with Ollama, or supercharged by 7 cloud APIs. 26 tools, 73 commands, lazy MCP tools (94% fewer tokens), Python 3.9+.">
 <meta property="og:title" content="Kodiqa — AI Coding Agent">
 <meta property="og:description" content="One agent. Every model. Zero limits.">
 <meta property="og:image" content="https://raw.githubusercontent.com/Kodiqa-Solutions/Kodiqa-agent/main/assets/social-preview.png">
@@ -128,6 +128,18 @@ section{position:relative;z-index:1;padding:80px 24px}
 .feature-icon{font-size:36px;margin-bottom:16px;display:block}
 .feature-title{font-size:20px;font-weight:700;margin-bottom:8px}
 .feature-desc{color:var(--dim);font-size:15px;line-height:1.7}
+.badge-new{
+  display:inline-block;font-size:11px;font-weight:800;letter-spacing:1px;
+  padding:2px 9px;border-radius:999px;margin-left:8px;vertical-align:middle;
+  background:linear-gradient(135deg,var(--green),var(--cyan));color:#04121a;
+}
+.feature-card.spotlight{
+  border-color:rgba(16,185,129,.35);
+  box-shadow:0 8px 40px rgba(16,185,129,.12);
+}
+.feature-card.spotlight .big-stat{
+  font-size:15px;color:var(--green);font-weight:700;
+}
 
 /* ── Terminal Demo ── */
 .demo{padding:100px 24px}
@@ -264,11 +276,11 @@ section{position:relative;z-index:1;padding:80px 24px}
       <div class="stat-label">Tools</div>
     </div>
     <div class="stat-item">
-      <div class="stat-number" data-target="69">0</div>
+      <div class="stat-number" data-target="73">0</div>
       <div class="stat-label">Commands</div>
     </div>
     <div class="stat-item">
-      <div class="stat-number" data-target="284">0</div>
+      <div class="stat-number" data-target="383">0</div>
       <div class="stat-label">Tests</div>
     </div>
   </div>
@@ -280,6 +292,11 @@ section{position:relative;z-index:1;padding:80px 24px}
     <h2 class="section-title fade-in">Built for Real Work</h2>
     <p class="section-sub fade-in">Not a toy. Not a wrapper. A full-featured coding agent with everything you need.</p>
     <div class="features-grid">
+      <div class="feature-card spotlight fade-in">
+        <span class="feature-icon">&#9889;</span>
+        <h3 class="feature-title">Lazy MCP Tools <span class="badge-new">NEW</span></h3>
+        <p class="feature-desc">Connected MCP servers are discovered <strong>on demand</strong> instead of injecting every tool schema into every request &mdash; <span class="big-stat">up to 94% fewer tool-schema tokens</span>. Usage-ranked, automatic, zero config. The per-turn cost stays flat no matter how many MCP tools you connect.</p>
+      </div>
       <div class="feature-card fade-in">
         <span class="feature-icon">&#9881;</span>
         <h3 class="feature-title">7 API Providers</h3>
@@ -385,10 +402,11 @@ section{position:relative;z-index:1;padding:80px 24px}
           <tr><td>7 cloud providers</td><td class="check">&#10003;</td><td class="cross">&#10007;</td><td class="cross">&#10007;</td><td class="cross">Partial</td></tr>
           <tr><td>Plan mode</td><td class="check">&#10003;</td><td class="cross">&#10007;</td><td class="cross">&#10007;</td><td class="cross">&#10007;</td></tr>
           <tr><td>MCP plugins</td><td class="check">&#10003;</td><td class="cross">&#10007;</td><td class="cross">&#10007;</td><td class="cross">&#10007;</td></tr>
+          <tr><td>Lazy MCP tools (token-efficient)</td><td class="check">&#10003;</td><td class="cross">&#10007;</td><td class="cross">&#10007;</td><td class="cross">&#10007;</td></tr>
           <tr><td>RAG search</td><td class="check">&#10003;</td><td class="cross">&#10007;</td><td class="cross">&#10007;</td><td class="cross">&#10007;</td></tr>
           <tr><td>Sub-agents</td><td class="check">&#10003;</td><td class="cross">&#10007;</td><td class="cross">&#10007;</td><td class="cross">&#10007;</td></tr>
           <tr><td>Multi-model consensus</td><td class="check">&#10003;</td><td class="cross">&#10007;</td><td class="cross">&#10007;</td><td class="cross">&#10007;</td></tr>
-          <tr><td>69 slash commands</td><td class="check">&#10003;</td><td class="cross">&#10007;</td><td class="cross">&#10007;</td><td class="cross">Limited</td></tr>
+          <tr><td>73 slash commands</td><td class="check">&#10003;</td><td class="cross">&#10007;</td><td class="cross">&#10007;</td><td class="cross">Limited</td></tr>
           <tr><td>Batch edit review</td><td class="check">&#10003;</td><td class="cross">&#10007;</td><td class="cross">&#10007;</td><td class="cross">&#10007;</td></tr>
           <tr><td>Open source</td><td class="check">AGPL-3.0</td><td class="cross">&#10007;</td><td class="cross">&#10007;</td><td class="check">Apache</td></tr>
           <tr><td>No subscription</td><td class="check">&#10003;</td><td class="cross">$20/mo</td><td class="cross">$10/mo</td><td class="check">&#10003;</td></tr>

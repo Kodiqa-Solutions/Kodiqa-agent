@@ -7,16 +7,16 @@
 </p>
 
 <p align="center">
-  <em>70 slash commands &bull; 26 tools &bull; RAG search &bull; custom personas &bull; plugins &bull; sub-agents &bull; LSP &bull; 5 themes</em>
+  <em>73 slash commands &bull; 26 tools &bull; lazy MCP tools &bull; RAG search &bull; custom personas &bull; plugins &bull; sub-agents &bull; LSP &bull; 5 themes</em>
 </p>
 
 <p align="center">
   <a href="#install"><img src="https://img.shields.io/badge/python-3.9+-blue?logo=python&logoColor=white" alt="Python 3.9+"/></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-purple" alt="License"/></a>
   <a href="https://github.com/Kodiqa-Solutions/Kodiqa-agent/actions/workflows/ci.yml"><img src="https://github.com/Kodiqa-Solutions/Kodiqa-agent/actions/workflows/ci.yml/badge.svg" alt="CI"/></a>
-  <a href="#testing"><img src="https://img.shields.io/badge/tests-317%20passing-brightgreen" alt="Tests"/></a>
+  <a href="#testing"><img src="https://img.shields.io/badge/tests-383%20passing-brightgreen" alt="Tests"/></a>
   <a href="#api-setup"><img src="https://img.shields.io/badge/providers-7-cyan" alt="7 Providers"/></a>
-  <a href="#26-tools"><img src="https://img.shields.io/badge/commands-70-orange" alt="70 Commands"/></a>
+  <a href="#26-tools"><img src="https://img.shields.io/badge/commands-73-orange" alt="73 Commands"/></a>
 </p>
 
 <p align="center">
@@ -43,6 +43,7 @@
 | **API providers** | 7 (Ollama, Claude, OpenAI, DeepSeek, Groq, Mistral, Qwen) | 1 (Claude) | 10+ (OpenAI, Claude, etc.) | 1 (Gemini) | 75+ (OpenAI, Claude, Gemini, Ollama, etc.) |
 | **Tools** | 26 built-in | ~15 built-in | ~10 built-in | ~12 built-in | ~12 built-in |
 | **MCP support** | Yes | Yes | No | Yes | Yes |
+| **Lazy MCP tools** (token-efficient) | Yes (~94% fewer tokens) | No | No | No | No |
 | **Multi-model** | Yes (consensus mode) | No | No | No | No |
 | **Plan mode** | Yes | Yes | No | No | No |
 | **Permission modes** | 3 (default/relaxed/auto) | 2 (normal/auto) | 1 (confirm all) | 2 (normal/sandbox) | 2 (normal/auto) |
@@ -64,7 +65,7 @@
 | **Desktop app / IDE** | No | Yes (VS Code) | No | No | Yes (VS Code, desktop) |
 | **Install** | `pip install kodiqa` | `npm install -g` | `pip install` | `npm install -g` | `go install` / `npm` |
 | **Language** | Python | TypeScript | Python | TypeScript | Go |
-| **Tests** | 317 | Yes | Yes | Yes | Yes |
+| **Tests** | 383 | Yes | Yes | Yes | Yes |
 | **Open source** | Yes (AGPL-3.0) | Yes (Apache-2.0) | Yes (Apache-2.0) | Yes (Apache-2.0) | Yes (MIT) |
 
 **Kodiqa's unique advantages**: free local models, 7 API providers, multi-model consensus, custom plugins, sub-agents, LSP integration, 5 themes, project templates, batch edit review, conversation branching, budget limits, auto-lint, and auto model discovery — features no other agent offers together.
@@ -268,11 +269,31 @@ Connect external tool servers via the Model Context Protocol:
 
 ```
 /mcp add mytools npx my-mcp-server     # connect a server
-/mcp list                                # show connected servers + tools
+/mcp list                                # show connected servers + tools (and lazy mode)
 /mcp remove mytools                      # disconnect
+/mcp lazy [on|off]                       # toggle lazy tool loading (default: on)
 ```
 
 MCP tools are automatically available to the AI alongside built-in tools.
+
+### ⚡ Lazy MCP tools — save up to 94% of tool-schema tokens
+
+Most agents paste **every** MCP tool's JSON schema into **every** request, so a big
+MCP server quietly taxes every turn. Kodiqa doesn't. When servers are connected,
+it exposes **3 fixed meta-tools** and lets the model discover tools on demand:
+
+| | Per-turn tool-schema cost (50-tool server) |
+|---|---|
+| Inject all schemas (typical agents) | ~5,300 tokens |
+| **Kodiqa lazy mode** | **~310 tokens** (~94% less) |
+
+- `mcp_search` — find tools by keyword, ranked by how often you've used them
+- `mcp_tool_schema` — fetch one tool's full schema only when needed
+- `mcp_call` — run a tool by name
+
+It's **on by default**, fully automatic (the model drives it), and the cost stays
+flat no matter how many MCP tools you connect. Toggle with `/mcp lazy off`, or set
+`mcp_lazy: false` in settings to always inject every schema.
 
 ## Model Shortcuts
 
