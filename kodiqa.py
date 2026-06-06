@@ -42,6 +42,7 @@ from context_builder import ContextBuilder
 from ollama_manager import OllamaManager
 from model_registry import ModelRegistry
 from agent_team import AgentTeam
+from toon import maybe_toon
 from actions import (
     parse_actions, execute_action, execute_tool_call, execute_tools_parallel, set_console,
     set_batch_mode, get_edit_queue, clear_edit_queue, apply_queued_edit, reject_queued_edit,
@@ -600,6 +601,9 @@ class Kodiqa:
         # the next configured provider (only triggers on failure; notifies loudly).
         self.failover_enabled = self.settings.get("failover", True)
         self._turn_stack = []  # per-turn pre-edit file snapshots for /rewind (cap 10)
+        # TOON: re-encode JSON tool results into a compact tabular form to save
+        # context tokens (only when it's actually shorter). Opt-in.
+        self.toon_enabled = self.settings.get("toon", False)
         self.mcp_lazy = self.settings.get("mcp_lazy", True)
         self._mcp_usage_file = os.path.join(KODIQA_DIR, "mcp_usage.json")
         self._mcp_usage = self._load_mcp_usage()
@@ -721,6 +725,7 @@ class Kodiqa:
         ("/unalias", (), "_cmd_unalias", "Tools & UI", "<name>", "Remove a command alias"),
         ("/notify", (), "_cmd_notify", "Tools & UI", "", "Toggle desktop notifications"),
         ("/optimizer", (), "_cmd_optimizer", "Tools & UI", "", "Toggle cost optimizer tips"),
+        ("/toon", (), "_cmd_toon", "Tools & UI", "[on|off]", "Toggle TOON compact encoding of JSON tool results (saves tokens)"),
 
         ("/diff", (), "_cmd_diff", "Git & GitHub", "[args]", "Show git diff"),
         ("/pr", (), "_cmd_pr", "Git & GitHub", "[title]", "Create a GitHub PR"),
@@ -1968,6 +1973,18 @@ class Kodiqa:
         save_settings(self.settings)
         state = "ON" if self._optimizer_enabled else "OFF"
         self.console.print(f"[{'green' if self._optimizer_enabled else 'yellow'}]Cost optimizer {state}[/]")
+
+    def _cmd_toon(self, arg):
+        a = arg.strip().lower()
+        if a in ("on", "off"):
+            self.toon_enabled = a == "on"
+        else:
+            self.toon_enabled = not self.toon_enabled
+        self.settings["toon"] = self.toon_enabled
+        save_settings(self.settings)
+        state = "ON" if self.toon_enabled else "OFF"
+        self.console.print(f"[{'green' if self.toon_enabled else 'yellow'}]TOON output {state}[/]"
+                           + (" — JSON tool results are compacted to save tokens." if self.toon_enabled else ""))
 
     def _cmd_theme(self, arg):
         from config import THEMES
@@ -3224,6 +3241,10 @@ class Kodiqa:
                     result = result[:20000] + "\n... (truncated)"
                 results_list.append((tc["id"], result))
             self.console.print(f"  [green]●[/] {label}")
+
+        # Compact JSON tool results into TOON to save context tokens (when shorter).
+        if self.toon_enabled:
+            results_list = [(tc_id, maybe_toon(r)) for (tc_id, r) in results_list]
 
         if self.batch_edits and get_edit_queue():
             set_batch_mode(False)

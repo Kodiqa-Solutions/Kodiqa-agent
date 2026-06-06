@@ -283,6 +283,9 @@ PERSONAS = {
 # ── Changelog ──
 # Canonical changelog is CHANGELOG.md — this list powers the /changelog command
 CHANGELOG = [
+    {"version": "v3.13.0", "date": "2026-06-06", "changes": [
+        "/toon (opt-in): re-encode JSON tool results into TOON — field names written once like a CSV header — for ~60% fewer tokens on large uniform arrays. Only used when genuinely shorter; non-JSON untouched.",
+    ]},
     {"version": "v3.12.0", "date": "2026-06-06", "changes": [
         "/rewind [n] — revert ALL file changes the AI made over the last n turns (default 1) in one step, with confirmation. Newly-created files are deleted; edited files restored. Works without git.",
     ]},

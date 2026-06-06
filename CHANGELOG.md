@@ -4,6 +4,16 @@ All notable changes to Kodiqa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.13.0] - 2026-06-06
+
+TOON output — token-efficient tool results.
+
+### Added
+- **`/toon` (opt-in)** — re-encode JSON tool results into TOON (Token-Oriented Object Notation): an array's field names are written once like a CSV header instead of repeated on every row, and scalar arrays are inlined. On large uniform data this is **~60% fewer tokens** than JSON (e.g. a 50-row array: 788 → 281 tokens). It only swaps in TOON when the result is genuinely shorter, so it never makes output larger; non-JSON results pass through untouched. Great alongside MCP servers that return big JSON.
+
+### Tests
+- `test_toon.py` — encoder (tabular arrays, scalar arrays, nesting, JSON fallback, quoting, numeric-string preservation) and `maybe_toon` (savings, never-longer, pass-through). 443 total.
+
 ## [3.12.0] - 2026-06-06
 
 Rewind a whole turn — an "undo everything the AI just did" safety net.
