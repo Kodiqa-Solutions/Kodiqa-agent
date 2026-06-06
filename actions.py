@@ -453,16 +453,25 @@ def do_edit_file(path, old_text, new_text):
         return f"File not found: {path}"
     with open(path, "r") as f:
         content = f.read()
-    if old_text not in content:
+    # In batch mode, compose on top of the latest queued edit for this path so two
+    # edits to the same file don't clobber each other (each queued entry is a full-file
+    # snapshot; applying them in order must yield both changes).
+    base = content
+    if _batch_mode:
+        for q in reversed(_edit_queue):
+            if q.get("path") == path and "new_content" in q:
+                base = q["new_content"]
+                break
+    if old_text not in base:
         return f"Text not found in {path}. Make sure the old text matches exactly."
-    new_content = content.replace(old_text, new_text, 1)
-    count = content.count(old_text)
+    new_content = base.replace(old_text, new_text, 1)
+    count = base.count(old_text)
     # Batch mode: queue the edit for review instead of applying
     if _batch_mode:
         _edit_queue.append({
             "path": path,
             "type": "edit",
-            "old_content": content,
+            "old_content": base,
             "new_content": new_content,
             "description": f"Edit {path} ({count} occurrence{'s' if count > 1 else ''})",
         })

@@ -110,10 +110,21 @@ def _retry_api_call(fn, max_retries=3, backoff_base=2.0, provider_name="API"):
 
 # ── Cost table (per 1M tokens: input, output) ──
 
+# Pricing ($/MTok in, $/MTok out). Keys are resolved model IDs (alias targets),
+# so the current default models (claude-sonnet-4-6 / claude-opus-4-6) MUST be here
+# or cost/budget silently report $0.
 COST_TABLE = {
-    "claude-sonnet-4-20250514": (3.0, 15.0),
+    # Current Claude aliases (claude/sonnet -> 4-6, opus -> 4-6, haiku -> 4-5)
+    "claude-sonnet-4-6": (3.0, 15.0),
+    "claude-opus-4-6": (5.0, 25.0),
     "claude-haiku-4-5-20251001": (0.80, 4.0),
+    # Other Claude IDs available via aliases
+    "claude-sonnet-4-5-20250929": (3.0, 15.0),
+    "claude-opus-4-5-20251101": (5.0, 25.0),
+    "claude-opus-4-1-20250805": (15.0, 75.0),
+    "claude-sonnet-4-20250514": (3.0, 15.0),
     "claude-opus-4-20250514": (15.0, 75.0),
+    # Qwen
     "qwen-plus": (0.40, 1.20),
     "qwen-max": (1.20, 6.0),
     "qwen3-coder-plus": (0.574, 2.294),
@@ -1019,11 +1030,21 @@ class Kodiqa:
     def _save_session(self):
         """Auto-save conversation to disk for recovery."""
         try:
-            # Only save string-content messages (skip complex tool_use blocks for simplicity)
-            saveable = []
-            for msg in self.history:
-                if isinstance(msg.get("content"), str):
-                    saveable.append(msg)
+            # Save full history (str AND content-block/tool_calls messages) so assistant
+            # turns aren't lost on restore. Only trim a trailing *unresolved* tool call
+            # (an assistant turn issuing tools with no following results) — restoring that
+            # would 400, since the next request would have tool_use/tool_calls with no result.
+            def _unresolved_toolcall(m):
+                if m.get("role") != "assistant":
+                    return False
+                if m.get("tool_calls"):  # OpenAI-compat format
+                    return True
+                c = m.get("content")
+                return isinstance(c, list) and any(
+                    isinstance(b, dict) and b.get("type") == "tool_use" for b in c)
+            saveable = list(self.history)
+            while saveable and _unresolved_toolcall(saveable[-1]):
+                saveable.pop()
             data = {"model": self.model, "cwd": self.cwd, "history": saveable}
             with open(self.session_file, "w") as f:
                 json.dump(data, f)
@@ -3546,8 +3567,10 @@ class Kodiqa:
             regular_calls = [tc for tc in tool_calls if not tc["name"].startswith("mcp_")]
             results_list = []
             if len(regular_calls) > 1:
-                with Status(f"  [yellow]●[/] Running {len(regular_calls)} tools...", console=self.console, spinner="dots"):
-                    results_list = execute_tools_parallel(regular_calls, self.memory, self._confirm)
+                allowed_calls, results_list = self._partition_workspace(regular_calls)
+                if allowed_calls:
+                    with Status(f"  [yellow]●[/] Running {len(allowed_calls)} tools...", console=self.console, spinner="dots"):
+                        results_list = list(results_list) + execute_tools_parallel(allowed_calls, self.memory, self._confirm)
                 for tc_id, result in results_list:
                     tc_name = next((tc["name"] for tc in regular_calls if tc["id"] == tc_id), "?")
                     tc_input = next((tc.get("input", {}) for tc in regular_calls if tc["id"] == tc_id), {})
@@ -3847,14 +3870,15 @@ class Kodiqa:
         }
         if name not in path_params or not params:
             return True
-        workspace = os.path.abspath(self.cwd)
+        # realpath (not abspath) so symlinks inside cwd can't escape the workspace.
+        workspace = os.path.realpath(self.cwd)
         if not hasattr(self, "_allowed_dirs"):
             self._allowed_dirs = set()
         for key in path_params[name]:
             file_path = params.get(key, "")
             if not file_path:
                 continue
-            abs_path = os.path.abspath(os.path.expanduser(file_path))
+            abs_path = os.path.realpath(os.path.expanduser(file_path))
             # Check if path is inside workspace
             if abs_path.startswith(workspace + "/") or abs_path == workspace:
                 continue
@@ -3882,6 +3906,17 @@ class Kodiqa:
             except (EOFError, KeyboardInterrupt):
                 return False
         return True
+
+    def _partition_workspace(self, calls):
+        """Split tool calls into (allowed, denied_results) by workspace boundary.
+        Used before execute_tools_parallel so multi-tool turns are also checked."""
+        allowed, denied = [], []
+        for tc in calls:
+            if self._check_workspace_boundary(tc["name"], tc.get("input", {})):
+                allowed.append(tc)
+            else:
+                denied.append((tc["id"], "Denied: file path is outside the workspace."))
+        return allowed, denied
 
     def _execute_tool(self, name, params):
         """Execute a tool call, routing MCP tools to MCP manager."""
@@ -4003,8 +4038,10 @@ class Kodiqa:
             regular_calls = [tc for tc in tool_calls if not tc["name"].startswith("mcp_")]
             results_list = []
             if len(regular_calls) > 1:
-                with Status(f"  [yellow]●[/] Running {len(regular_calls)} tools...", console=self.console, spinner="dots"):
-                    results_list = execute_tools_parallel(regular_calls, self.memory, self._confirm)
+                allowed_calls, results_list = self._partition_workspace(regular_calls)
+                if allowed_calls:
+                    with Status(f"  [yellow]●[/] Running {len(allowed_calls)} tools...", console=self.console, spinner="dots"):
+                        results_list = list(results_list) + execute_tools_parallel(allowed_calls, self.memory, self._confirm)
                 for tc_id, result in results_list:
                     tc_name = next((tc["name"] for tc in regular_calls if tc["id"] == tc_id), "?")
                     tc_input = next((tc.get("input", {}) for tc in regular_calls if tc["id"] == tc_id), {})

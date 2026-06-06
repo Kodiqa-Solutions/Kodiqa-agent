@@ -202,3 +202,15 @@ class TestContextEstimate:
         k.history = [{"role": "user", "content": "x" * 40}]
         # char/4 heuristic, NOT a cumulative session counter
         assert Kodiqa._estimate_tokens(k) == 10
+
+
+class TestCostTable:
+    """Default model aliases must be priced or cost/budget silently report $0."""
+
+    def test_current_claude_aliases_priced(self):
+        from kodiqa import COST_TABLE
+        from config import CLAUDE_ALIASES
+        for alias in ("claude", "sonnet", "opus"):
+            target = CLAUDE_ALIASES[alias]
+            assert target in COST_TABLE, f"{alias} -> {target} missing from COST_TABLE ($0 cost)"
+            assert COST_TABLE[target][0] > 0 and COST_TABLE[target][1] > 0

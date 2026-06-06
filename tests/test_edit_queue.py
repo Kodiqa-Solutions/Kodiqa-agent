@@ -66,6 +66,20 @@ class TestBatchMode:
 
     def test_invalid_index(self):
         assert "Invalid" in apply_queued_edit(-1)
+
+    def test_two_edits_same_file_compose(self, tmp_path):
+        """Regression: two queued edits to one file must compose, not clobber."""
+        f = tmp_path / "compose.py"
+        f.write_text("alpha\nbeta\n")
+        clear_edit_queue()
+        set_batch_mode(True)
+        do_edit_file(str(f), "alpha", "ALPHA")
+        do_edit_file(str(f), "beta", "BETA")  # must build on the queued ALPHA, not stale disk
+        set_batch_mode(False)
+        apply_queued_edit(0)
+        apply_queued_edit(1)
+        clear_edit_queue()
+        assert f.read_text() == "ALPHA\nBETA\n"  # both edits survive
         assert "Invalid" in apply_queued_edit(999)
         assert "Invalid" in reject_queued_edit(-1)
 

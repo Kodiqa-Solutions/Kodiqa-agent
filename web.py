@@ -1,11 +1,43 @@
 """Kodiqa web tools - DuckDuckGo + Google search and page fetching."""
 
+import ipaddress
 import logging
 import re
+import socket
 import requests
+from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 
 _logger = logging.getLogger("kodiqa")
+
+
+def _is_safe_url(url):
+    """SSRF guard: allow only http/https to public hosts. Rejects internal/loopback/
+    link-local/cloud-metadata targets (e.g. 169.254.169.254). Returns (ok, reason)."""
+    try:
+        p = urlparse(url)
+    except Exception:
+        return False, "could not parse URL"
+    if p.scheme not in ("http", "https"):
+        return False, f"scheme '{p.scheme}' not allowed (http/https only)"
+    host = p.hostname
+    if not host:
+        return False, "missing host"
+    try:
+        # Resolve all addresses and reject if ANY is non-public (defends against
+        # DNS that returns a private IP).
+        addrs = {ai[4][0] for ai in socket.getaddrinfo(host, None)}
+    except Exception as e:
+        return False, f"DNS resolution failed: {e}"
+    for addr in addrs:
+        try:
+            ip = ipaddress.ip_address(addr)
+        except ValueError:
+            return False, f"unparseable address {addr}"
+        if (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+            return False, f"host resolves to non-public address {addr}"
+    return True, ""
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -159,9 +191,24 @@ def search_google_api(query, max_results=8):
 
 
 def fetch_page(url, max_chars=6000):
-    """Fetch a URL and extract readable text."""
+    """Fetch a URL and extract readable text. Blocks SSRF (internal/loopback hosts)
+    and re-validates each redirect hop."""
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=10)
+        # Follow redirects manually so each hop is SSRF-checked before we connect.
+        for _ in range(5):
+            ok, reason = _is_safe_url(url)
+            if not ok:
+                return f"Refused to fetch URL: {reason}"
+            resp = requests.get(url, headers=HEADERS, timeout=10, allow_redirects=False)
+            if resp.is_redirect or resp.is_permanent_redirect:
+                nxt = resp.headers.get("Location")
+                if not nxt:
+                    break
+                url = requests.compat.urljoin(url, nxt)
+                continue
+            break
+        else:
+            return "Fetch error: too many redirects"
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
         # Remove scripts, styles, navs

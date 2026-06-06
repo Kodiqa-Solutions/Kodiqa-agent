@@ -4,6 +4,21 @@ All notable changes to Kodiqa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.5.0] - 2026-06-06
+
+High-severity fixes from the 2026-06-06 audit (security + data-loss).
+
+### Fixed
+- **Workspace boundary bypass on multi-tool turns** — `execute_tools_parallel` skipped `_check_workspace_boundary`, so a model emitting 2+ tool calls could write/delete outside the workspace unprompted. The boundary check now runs on every tool (single and parallel), and uses `realpath` so symlinks can't escape.
+- **Cost/budget reported $0 for current models** — `COST_TABLE` lacked the current alias targets (`claude-sonnet-4-6`, `claude-opus-4-6`, …). Added them; budget now tracks real spend.
+- **Sessions lost assistant messages on save/restore** — `_save_session` kept only string-content messages, dropping Claude content-block turns and orphaning OpenAI tool messages (400 on restore). Now saves full history, trimming only a trailing unresolved tool call.
+- **SSRF in `web_fetch`** — now validates URLs (http/https only) and rejects internal/loopback/link-local/cloud-metadata hosts, re-checking every redirect hop.
+- **MCP stdio deadlock** — server stderr is now `DEVNULL` (an undrained pipe deadlocked at ~64KB) and reads have a 30s timeout so a hung server can't block Kodiqa; killed servers are now reaped.
+- **Batch-edit queue clobbered same-file edits** — two queued edits to one file now compose on the latest queued state instead of both snapshotting the original (only the last edit used to survive).
+
+### Tests
+- Added regression tests for SSRF, the batch-edit clobber, and the cost table (295 total).
+
 ## [3.4.3] - 2026-06-06
 
 ### Changed

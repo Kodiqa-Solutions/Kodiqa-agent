@@ -27,7 +27,9 @@ class MCPServer:
             cmd = [self.command] + self.args
             self.process = subprocess.Popen(
                 cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE, text=True, env=self.env,
+                # DEVNULL, not PIPE: an undrained stderr pipe fills at ~64KB and
+                # deadlocks the server.
+                stderr=subprocess.DEVNULL, text=True, env=self.env,
             )
             # Initialize with MCP protocol
             resp = self._send({"jsonrpc": "2.0", "method": "initialize", "params": {
@@ -66,6 +68,26 @@ class MCPServer:
             return f"MCP error: {resp['error'].get('message', str(resp['error']))}"
         return "MCP: no response"
 
+    def _readline_timeout(self, timeout=30):
+        """Read one line from stdout, returning None if it takes longer than `timeout`
+        seconds — so a hung/misbehaving server can't block Kodiqa indefinitely."""
+        result = {}
+
+        def _read():
+            try:
+                result["line"] = self.process.stdout.readline()
+            except Exception as e:
+                result["err"] = e
+
+        t = threading.Thread(target=_read, daemon=True)
+        t.start()
+        t.join(timeout)
+        if t.is_alive():
+            return None  # timed out
+        if "err" in result:
+            raise result["err"]
+        return result.get("line")
+
     def _send(self, message):
         """Send a JSON-RPC message and read the response."""
         if not self.process or self.process.poll() is not None:
@@ -77,7 +99,10 @@ class MCPServer:
                 line = json.dumps(message) + "\n"
                 self.process.stdin.write(line)
                 self.process.stdin.flush()
-                resp_line = self.process.stdout.readline()
+                resp_line = self._readline_timeout(30)
+                if resp_line is None:
+                    _logger.warning(f"MCP '{self.name}' timed out waiting for response")
+                    return None
                 if resp_line:
                     return json.loads(resp_line)
             except Exception as e:
@@ -103,6 +128,10 @@ class MCPServer:
                 self.process.wait(timeout=5)
             except Exception:
                 self.process.kill()
+                try:
+                    self.process.wait(timeout=5)  # reap, don't leave a zombie
+                except Exception:
+                    pass
 
     def get_tool_schemas(self):
         """Convert MCP tools to Claude-compatible tool schemas."""
