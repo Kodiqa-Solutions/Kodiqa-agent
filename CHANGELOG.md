@@ -4,6 +4,11 @@ All notable changes to Kodiqa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.4.3] - 2026-06-06
+
+### Changed
+- The startup model update + new-model check now runs on **every launch by default** again (`update_check_interval_hours` default 24 → 0), restoring the pre-3.4.0 behavior — while keeping all the 3.4.0 fixes. The throttle is still available (set `update_check_interval_hours` > 0), `--no-update` still skips, and `/update` still forces a check.
+
 ## [3.4.2] - 2026-06-06
 
 ### Added

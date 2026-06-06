@@ -336,7 +336,7 @@ DEFAULTS = {
     "skip_extensions": list(SKIP_EXTENSIONS),
     "hooks": {},
     "check_updates": True,            # check Ollama model updates + new models on startup
-    "update_check_interval_hours": 24,  # throttle: run that check at most once per N hours (0 = every launch)
+    "update_check_interval_hours": 0,   # 0 = check every launch (default); set >0 to throttle to once per N hours
 }
 
 
