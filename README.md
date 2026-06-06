@@ -45,6 +45,7 @@
 | **MCP support** | Yes | Yes | No | Yes | Yes |
 | **Lazy MCP tools** (token-efficient) | Yes (~94% fewer tokens) | No | No | No | No |
 | **Multi-model** | Yes (consensus mode) | No | No | No | No |
+| **Cross-provider failover** | Yes | No | No | No | No |
 | **Plan mode** | Yes | Yes | No | No | No |
 | **Permission modes** | 3 (default/relaxed/auto) | 2 (normal/auto) | 1 (confirm all) | 2 (normal/sandbox) | 2 (normal/auto) |
 | **Batch edit review** | Yes (per-file accept/reject) | No | No | No | No |
@@ -90,6 +91,7 @@ kodiqa
 - **Claude Code-style UI** — `❯` prompt with separator line (prompt_toolkit), arrow-key navigation for all prompts
 - **26 tools** — file ops, git, search, web, memory, clipboard, multi-edit, undo, diff apply
 - **7 API providers** — Ollama (local/free), Claude, OpenAI, DeepSeek, Groq, Mistral, Qwen
+- **Cross-provider failover** — if a provider is down/rate-limited, the turn auto-retries on the next configured provider and continues (`/failover`)
 - **MCP server support** — connect external tool servers via Model Context Protocol
 - **Lazy MCP tools** — large MCP servers are discovered on demand (`mcp_search` / `mcp_call`) instead of injecting every tool schema each turn — ~94% fewer tool-schema tokens (`/mcp lazy`)
 - **Auto model discovery** — new Claude/Qwen models appear automatically from APIs

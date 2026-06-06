@@ -595,6 +595,9 @@ class Kodiqa:
         # Lazy MCP tools: expose 3 meta-tools (search/schema/call) instead of injecting
         # every MCP tool's schema into every request — saves the per-turn token cost of
         # large MCP servers. Usage counts rank mcp_search results.
+        # Cross-provider failover: on a hard API failure, auto-retry the request on
+        # the next configured provider (only triggers on failure; notifies loudly).
+        self.failover_enabled = self.settings.get("failover", True)
         self.mcp_lazy = self.settings.get("mcp_lazy", True)
         self._mcp_usage_file = os.path.join(KODIQA_DIR, "mcp_usage.json")
         self._mcp_usage = self._load_mcp_usage()
@@ -666,6 +669,7 @@ class Kodiqa:
         ("/delete", ("/rm",), "_cmd_delete", "Models & providers", "[model]", "Delete local Ollama model(s)"),
         ("/update", (), "_cmd_update", "Models & providers", "", "Check now for model + new-model updates"),
         ("/key", (), "_cmd_key", "Models & providers", "[provider]", "Add/update an API key"),
+        ("/failover", (), "_cmd_failover", "Models & providers", "[on|off|auto|models…]", "Cross-provider failover (auto-retry on another provider when one fails)"),
 
         ("/clear", (), "_cmd_clear", "Conversation", "", "Clear conversation"),
         ("/compact", (), "_cmd_compact", "Conversation", "", "Summarize conversation to save context"),
@@ -1525,6 +1529,34 @@ class Kodiqa:
 
     def _cmd_key(self, arg):
         self._setup_api_key(arg.strip().lower() if arg.strip() else None)
+
+    def _cmd_failover(self, arg):
+        arg = arg.strip()
+        if not arg:
+            state = "[green]ON[/]" if self.failover_enabled else "[dim]OFF[/]"
+            self.console.print(f"Cross-provider failover: {state}")
+            cands = self._failover_candidates()
+            if len(cands) > 1:
+                self.console.print("  Order: " + " → ".join(m for (_, _, m) in cands))
+            else:
+                self.console.print("  [dim]No fallback available (need ≥2 providers with keys set).[/]")
+            self.console.print("[dim]  /failover on|off  |  /failover auto  |  /failover <model1> <model2> …[/]")
+            return
+        parts = arg.split()
+        sub = parts[0].lower()
+        if sub in ("on", "off"):
+            self.failover_enabled = sub == "on"
+            self.settings["failover"] = self.failover_enabled
+            save_settings(self.settings)
+            self.console.print(f"[{'green' if self.failover_enabled else 'yellow'}]Failover {sub.upper()}[/]")
+        elif sub == "auto":
+            self.settings.pop("failover_chain", None)
+            save_settings(self.settings)
+            self.console.print("[green]Failover order: auto[/] (all providers with keys)")
+        else:
+            self.settings["failover_chain"] = parts
+            save_settings(self.settings)
+            self.console.print("[green]Failover order set:[/] " + " → ".join(parts))
 
     def _cmd_cd(self, arg):
         path = os.path.expanduser(arg) if arg else os.path.expanduser("~")
@@ -2949,6 +2981,71 @@ class Kodiqa:
 
     # ── Native tool-calling chat loop (Claude + all OpenAI-compatible providers) ──
 
+    # ── Cross-provider failover ──
+
+    def _provider_label(self, kind, provider):
+        if kind == "claude":
+            return "Claude API"
+        if provider and provider in OPENAI_COMPAT_PROVIDERS:
+            return OPENAI_COMPAT_PROVIDERS[provider]["label"] + " API"
+        return "API"
+
+    def _failover_candidates(self):
+        """Ordered (kind, provider, model) of cloud providers we can fail over to.
+        Honors an explicit settings['failover_chain'] (list of model aliases);
+        otherwise auto: every provider whose key is set, with a sensible default model."""
+        chain = self.settings.get("failover_chain")
+        out = []
+        if chain:
+            for alias in chain:
+                model = self._resolve_model_name(alias)
+                if is_claude_model(model):
+                    if self.claude_key:
+                        out.append(("claude", None, model))
+                else:
+                    p = self._get_provider_for_model(model) or get_openai_provider(model)
+                    if p and self.api_keys.get(p):
+                        out.append(("openai", p, model))
+            return out
+        if self.claude_key:
+            out.append(("claude", None, CLAUDE_ALIASES.get("sonnet", "claude-sonnet-4-6")))
+        for pn, pv in OPENAI_COMPAT_PROVIDERS.items():
+            if self.api_keys.get(pn):
+                out.append(("openai", pn, list(pv["aliases"].values())[0]))
+        return out
+
+    def _stream_native_with_failover(self, kind, provider, system_prompt):
+        """Stream from the active provider; on a hard failure (None — not a user
+        interrupt, which returns a dict) fall over to the next configured provider,
+        rebuilding messages in its format. Returns (response, kind, provider) for
+        whichever provider answered, so the caller stays in sync."""
+        attempts = [(kind, provider, self.model)]
+        if self.failover_enabled:
+            current = "claude" if kind == "claude" else provider
+            tried = {current}
+            for (k, p, m) in self._failover_candidates():
+                pid = "claude" if k == "claude" else p
+                if pid not in tried:
+                    attempts.append((k, p, m))
+                    tried.add(pid)
+        for idx, (k, p, model) in enumerate(attempts):
+            if idx > 0:  # this is a failover attempt
+                self.model = model
+                self.console.print(
+                    f"  [yellow]⚠ Failing over to[/] [cyan]{model}[/] "
+                    f"[dim]({self._provider_label(k, p)})[/]…")
+            if k == "claude":
+                response = self._call_claude_stream(system_prompt, self._build_claude_messages())
+            else:
+                response = self._call_openai_compat_stream(self._build_openai_messages(system_prompt), p)
+            if response is not None:
+                return response, k, p
+            if self._stream_interrupted:
+                return None, k, p  # user aborted — never fail over
+        if len(attempts) > 1:
+            self.console.print("[red]All configured providers failed.[/]")
+        return None, kind, provider
+
     def _run_native_chat(self, user_msg, kind, provider=None):
         """One agentic loop for every native tool-calling provider. `kind` is
         "claude" or "openai"; only the message/assistant/result *formats* differ,
@@ -2980,12 +3077,10 @@ class Kodiqa:
                 self.console.print(f"[yellow]Reached max iterations ({_max_iter}). Stopping — raise max_iterations in /config if needed.[/]")
                 break
             system_prompt = self._build_system_prompt(CLAUDE_SYSTEM)
-            if kind == "claude":
-                messages = self._build_claude_messages()
-                response = self._call_claude_stream(system_prompt, messages)
-            else:
-                messages = self._build_openai_messages(system_prompt)
-                response = self._call_openai_compat_stream(messages, provider)
+            # Stream from the active provider; transparently fail over to another
+            # configured provider on a hard failure. kind/provider track whichever
+            # provider actually answered (so the rest of the loop stays in sync).
+            response, kind, provider = self._stream_native_with_failover(kind, provider, system_prompt)
             if response is None:
                 return
             if self._stream_interrupted:

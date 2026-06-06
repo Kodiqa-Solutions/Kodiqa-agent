@@ -4,6 +4,19 @@ All notable changes to Kodiqa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.11.0] - 2026-06-06
+
+Cross-provider failover — your turn finishes even when a provider doesn't.
+
+### Added
+- **Automatic cross-provider failover** (on by default). When an API call fails hard — provider down, rate-limited (429), 5xx, timeout, or bad key (401) — Kodiqa transparently retries the *same* request on the next configured provider (rebuilding the messages in that provider's format) and continues the turn there, instead of erroring out. It notifies loudly when it switches (`⚠ Failing over to <model>`), and never fails over on a user interrupt.
+- **`/failover`** — `on`/`off`, `auto` (use every provider with a key set), or an explicit order: `/failover claude deepseek qwen`. `/failover` with no args shows the current order. Persisted in settings.
+
+Single-provider users are unaffected (nothing to fail over to). Failover only crosses cloud providers that have keys configured.
+
+### Tests
+- `test_failover.py` — candidate selection (auto + explicit chain), the stream-with-failover logic (switch on failure, stay on success, never on interrupt, respect the off switch), and the `/failover` command. 419 total.
+
 ## [3.10.0] - 2026-06-06
 
 OAuth for remote MCP servers — completes the "Remote MCP + OAuth" work.

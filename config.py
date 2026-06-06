@@ -283,6 +283,9 @@ PERSONAS = {
 # ── Changelog ──
 # Canonical changelog is CHANGELOG.md — this list powers the /changelog command
 CHANGELOG = [
+    {"version": "v3.11.0", "date": "2026-06-06", "changes": [
+        "Cross-provider failover (on by default): when a provider is down/rate-limited/erroring, the request auto-retries on the next configured provider and the turn continues there. Configure with /failover (on|off|auto|<model order>).",
+    ]},
     {"version": "v3.10.0", "date": "2026-06-06", "changes": [
         "OAuth login for remote MCP servers: /mcp add <url> --oauth runs the browser (authorization-code + PKCE) flow with discovery + dynamic client registration; --oauth-client-id/--oauth-client-secret does machine-to-machine. Tokens cached + auto-refreshed.",
     ]},
