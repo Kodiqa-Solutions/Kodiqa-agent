@@ -283,6 +283,9 @@ PERSONAS = {
 # ── Changelog ──
 # Canonical changelog is CHANGELOG.md — this list powers the /changelog command
 CHANGELOG = [
+    {"version": "v3.15.0", "date": "2026-06-06", "changes": [
+        "Custom prompt-template commands: drop .kodiqa/commands/<name>.md and run it as /<name>, with $ARGUMENTS / $1 $2 substitution. /commands lists them. Project overrides global (~/.kodiqa/commands/).",
+    ]},
     {"version": "v3.14.0", "date": "2026-06-06", "changes": [
         "OpenAPI + GraphQL tool sources: /mcp add <name> --spec <url|file> turns a REST API into tools; --graphql <url> introspects a GraphQL endpoint. No codegen; works with lazy mode + TOON + auth flags.",
     ]},

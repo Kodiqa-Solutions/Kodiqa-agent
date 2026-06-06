@@ -308,6 +308,7 @@ class TestCommandRegistry:
         k = MagicMock(spec=Kodiqa)
         k._COMMAND_HANDLERS = Kodiqa._COMMAND_HANDLERS
         k.settings = {"aliases": {"co": "model claude"}}
+        k._find_custom_command = lambda n: None  # no custom template by that name
         k._cmd_model = lambda arg: captured.setdefault("arg", arg)
         k._handle_slash = lambda cmd: Kodiqa._handle_slash(k, cmd)  # real recursion
         # /co is not a real command → falls through to user alias → /model claude

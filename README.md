@@ -7,16 +7,16 @@
 </p>
 
 <p align="center">
-  <em>76 slash commands &bull; 26 tools &bull; lazy MCP tools &bull; RAG search &bull; custom personas &bull; plugins &bull; sub-agents &bull; LSP &bull; 5 themes</em>
+  <em>77 slash commands &bull; 26 tools &bull; lazy MCP tools &bull; RAG search &bull; custom personas &bull; plugins &bull; sub-agents &bull; LSP &bull; 5 themes</em>
 </p>
 
 <p align="center">
   <a href="#install"><img src="https://img.shields.io/badge/python-3.9+-blue?logo=python&logoColor=white" alt="Python 3.9+"/></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-purple" alt="License"/></a>
   <a href="https://github.com/Kodiqa-Solutions/Kodiqa-agent/actions/workflows/ci.yml"><img src="https://github.com/Kodiqa-Solutions/Kodiqa-agent/actions/workflows/ci.yml/badge.svg" alt="CI"/></a>
-  <a href="#testing"><img src="https://img.shields.io/badge/tests-452%20passing-brightgreen" alt="Tests"/></a>
+  <a href="#testing"><img src="https://img.shields.io/badge/tests-462%20passing-brightgreen" alt="Tests"/></a>
   <a href="#api-setup"><img src="https://img.shields.io/badge/providers-7-cyan" alt="7 Providers"/></a>
-  <a href="#26-tools"><img src="https://img.shields.io/badge/commands-76-orange" alt="76 Commands"/></a>
+  <a href="#26-tools"><img src="https://img.shields.io/badge/commands-77-orange" alt="77 Commands"/></a>
 </p>
 
 <p align="center">
@@ -67,7 +67,7 @@
 | **Desktop app / IDE** | No | Yes (VS Code) | No | No | Yes (VS Code, desktop) |
 | **Install** | `pip install kodiqa` | `npm install -g` | `pip install` | `npm install -g` | `go install` / `npm` |
 | **Language** | Python | TypeScript | Python | TypeScript | Go |
-| **Tests** | 452 | Yes | Yes | Yes | Yes |
+| **Tests** | 462 | Yes | Yes | Yes | Yes |
 | **Open source** | Yes (AGPL-3.0) | Yes (Apache-2.0) | Yes (Apache-2.0) | Yes (Apache-2.0) | Yes (MIT) |
 
 **Kodiqa's unique advantages**: free local models, 7 API providers, multi-model consensus, custom plugins, sub-agents, LSP integration, 5 themes, project templates, batch edit review, conversation branching, budget limits, auto-lint, and auto model discovery — features no other agent offers together.
@@ -94,6 +94,7 @@ kodiqa
 - **7 API providers** — Ollama (local/free), Claude, OpenAI, DeepSeek, Groq, Mistral, Qwen
 - **Cross-provider failover** — if a provider is down/rate-limited, the turn auto-retries on the next configured provider and continues (`/failover`)
 - **TOON output** — `/toon` re-encodes JSON tool results into a compact tabular form (~60% fewer tokens on large arrays)
+- **Custom commands** — drop `.kodiqa/commands/<name>.md` and run it as `/<name>` (with `$ARGUMENTS`/`$1` substitution); `/commands` lists them
 - **MCP server support** — connect external tool servers via Model Context Protocol
 - **Lazy MCP tools** — large MCP servers are discovered on demand (`mcp_search` / `mcp_call`) instead of injecting every tool schema each turn — ~94% fewer tool-schema tokens (`/mcp lazy`)
 - **Auto model discovery** — new Claude/Qwen models appear automatically from APIs
@@ -205,6 +206,7 @@ Prompt uses a separator line (like Claude Code):
 | `/pin <path>` | Pin file to always include in context |
 | `/unpin <path>` | Remove pinned file |
 | `/alias <name> <cmd>` | Create command alias |
+| `/commands` | List custom prompt-template commands (`.kodiqa/commands/*.md`) |
 | `/unalias <name>` | Remove command alias |
 | `/notify` | Toggle desktop notifications for long tasks |
 | `/optimizer` | Toggle cost optimizer tips |

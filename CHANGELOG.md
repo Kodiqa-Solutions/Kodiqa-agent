@@ -4,6 +4,19 @@ All notable changes to Kodiqa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.15.0] - 2026-06-06
+
+Custom prompt-template commands — your own reusable slash commands.
+
+### Added
+- **Custom commands from Markdown files.** Drop a `.kodiqa/commands/<name>.md` file (project) or `~/.kodiqa/commands/<name>.md` (global) and invoke it as `/<name>`. The file's text becomes the prompt, with `$ARGUMENTS` (all args) and `$1`, `$2`, … (positional) substitution; if there's no placeholder, the args are appended. Optional `--- description: … ---` frontmatter shows up in the listing. Project commands override global ones.
+- **`/commands`** — list your custom commands (with source + description). They also tab-complete like built-ins.
+
+Example: `echo 'Review $ARGUMENTS for bugs and suggest fixes' > .kodiqa/commands/review.md`, then `/review src/app.py`.
+
+### Tests
+- `test_custom_commands.py` — template rendering ($ARGUMENTS/$N/append/frontmatter), discovery (project-over-global, path-traversal rejection), and dispatch. 462 total.
+
 ## [3.14.0] - 2026-06-06
 
 OpenAPI + GraphQL tool sources — turn any REST or GraphQL API into tools, no codegen.

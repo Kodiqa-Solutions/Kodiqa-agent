@@ -418,8 +418,13 @@ class KodiqaCompleter(Completer):
         try:
             if text.lstrip().startswith("/"):
                 if " " not in text.strip():
-                    # Complete slash command itself
-                    for cmd in self.agent._SLASH_COMMANDS:
+                    # Complete slash command itself (built-ins + custom template commands)
+                    names = list(self.agent._SLASH_COMMANDS)
+                    try:
+                        names += ["/" + n for n in self.agent._custom_commands()]
+                    except Exception:
+                        pass
+                    for cmd in names:
                         if cmd.startswith(text.lstrip()):
                             yield Completion(cmd, start_position=-len(text.lstrip()))
                 else:
@@ -722,6 +727,7 @@ class Kodiqa:
         ("/plugins", (), "_cmd_plugins", "Tools & UI", "", "List/reload custom tool plugins"),
         ("/theme", (), "_cmd_theme", "Tools & UI", "<name>", "Switch UI theme"),
         ("/alias", (), "_cmd_alias", "Tools & UI", "<name> <cmd>", "Create a command alias"),
+        ("/commands", (), "_cmd_commands", "Tools & UI", "", "List custom prompt-template commands (.kodiqa/commands/*.md)"),
         ("/unalias", (), "_cmd_unalias", "Tools & UI", "<name>", "Remove a command alias"),
         ("/notify", (), "_cmd_notify", "Tools & UI", "", "Toggle desktop notifications"),
         ("/optimizer", (), "_cmd_optimizer", "Tools & UI", "", "Toggle cost optimizer tips"),
@@ -1262,9 +1268,14 @@ class Kodiqa:
         if handler:
             getattr(self, handler)(arg)
             return
+        cmd_name = command.lstrip("/")
+        # Custom prompt-template commands (.kodiqa/commands/<name>.md)
+        cmd_path = self._find_custom_command(cmd_name)
+        if cmd_path:
+            self._run_custom_command(cmd_path, arg)
+            return
         # Check user-defined aliases before giving up
         aliases = self.settings.get("aliases", {})
-        cmd_name = command.lstrip("/")
         if cmd_name in aliases:
             expanded = "/" + aliases[cmd_name]
             if arg:
@@ -1272,6 +1283,95 @@ class Kodiqa:
             self._handle_slash(expanded)
         else:
             self.console.print(f"[red]Unknown command: {command}. Type /help[/]")
+
+    # ── Custom prompt-template commands (.kodiqa/commands/*.md) ──
+
+    def _command_dirs(self):
+        """Where custom command templates live (project dir takes precedence)."""
+        return [os.path.join(self.cwd, ".kodiqa", "commands"),
+                os.path.join(KODIQA_DIR, "commands")]
+
+    def _find_custom_command(self, name):
+        """Path to the <name>.md template (project before global), or None."""
+        if not name or "/" in name or "." in name:
+            return None
+        for d in self._command_dirs():
+            p = os.path.join(d, f"{name}.md")
+            if os.path.isfile(p):
+                return p
+        return None
+
+    def _custom_commands(self):
+        """{name: (path, description)} for all discovered templates (project wins)."""
+        out = {}
+        for d in reversed(self._command_dirs()):  # global first so project overrides
+            try:
+                for fn in sorted(os.listdir(d)):
+                    if fn.endswith(".md"):
+                        name = fn[:-3]
+                        path = os.path.join(d, fn)
+                        out[name] = (path, self._template_description(path))
+            except OSError:
+                continue
+        return out
+
+    @staticmethod
+    def _template_description(path):
+        try:
+            with open(path) as f:
+                head = f.read(400)
+        except OSError:
+            return ""
+        # optional `--- ... description: X ... ---` frontmatter
+        m = re.search(r"^---\s*\n(.*?)\n---", head, re.DOTALL)
+        if m:
+            dm = re.search(r"description:\s*(.+)", m.group(1))
+            if dm:
+                return dm.group(1).strip()
+        return ""
+
+    @staticmethod
+    def _render_template(text, arg):
+        # strip optional frontmatter
+        text = re.sub(r"^---\s*\n.*?\n---\s*\n?", "", text, count=1, flags=re.DOTALL)
+        args = arg.split()
+        had_placeholder = False
+        if "$ARGUMENTS" in text:
+            text = text.replace("$ARGUMENTS", arg)
+            had_placeholder = True
+        for i, a in enumerate(args, 1):
+            if f"${i}" in text:
+                text = text.replace(f"${i}", a)
+                had_placeholder = True
+        if arg and not had_placeholder:
+            text = text.rstrip() + "\n\n" + arg
+        return text.strip()
+
+    def _run_custom_command(self, path, arg):
+        try:
+            with open(path) as f:
+                template = f.read()
+        except OSError as e:
+            self.console.print(f"[red]Could not read command: {e}[/]")
+            return
+        rendered = self._render_template(template, arg)
+        if not rendered:
+            self.console.print("[dim]Command template is empty.[/]")
+            return
+        self._chat(rendered)
+
+    def _cmd_commands(self, arg):
+        cmds = self._custom_commands()
+        if not cmds:
+            self.console.print("[dim]No custom commands. Create one:[/]")
+            self.console.print(f"[dim]  mkdir -p .kodiqa/commands && echo 'Review $ARGUMENTS for bugs' > .kodiqa/commands/review.md[/]")
+            self.console.print("[dim]Then run [/][bold]/review <file>[/][dim]. Templates support $ARGUMENTS and $1, $2, … Global dir: ~/.kodiqa/commands/[/]")
+            return
+        self.console.print("[bold]Custom commands:[/]")
+        for name, (path, desc) in sorted(cmds.items()):
+            src = "project" if path.startswith(self.cwd) else "global"
+            tail = f" — {desc}" if desc else ""
+            self.console.print(f"  [cyan]/{name}[/] [dim]({src}){tail}[/]")
 
     def _cmd_quit(self, arg):
         self._quit()
