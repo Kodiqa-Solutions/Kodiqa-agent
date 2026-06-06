@@ -5,3 +5,7 @@ __pycache__/
 kodiqa.egg-info/
 dist/
 build/
+
+# Local/dev docs — not published
+CLAUDE.md
+FUTURE_FIXES.md
