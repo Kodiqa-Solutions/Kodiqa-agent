@@ -4,6 +4,14 @@ All notable changes to Kodiqa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.8.1] - 2026-06-06
+
+### Fixed
+- **`--no-update` was silently ignored** (regression since 3.7.3). The God-class split left a bare `self` inside `getattr(self, "_skip_updates", …)` in the extracted `OllamaManager`, so the flag — which lives on the agent — was never read and the startup model check ran anyway. Same bug class fixed in two more spots from that refactor: Ollama shutdown (`_ollama_proc` lookup → the spawned server is now actually stopped) and the live-model discovery cache (`_cached_api_models` reads → live API models are recognized again). Added regression tests so these can't silently break again.
+
+### Added
+- Demo GIF of lazy MCP tools (toggle on/off, tools discovered on demand) on the landing page and in the README.
+
 ## [3.8.0] - 2026-06-06
 
 Lazy MCP tools — big token savings for MCP servers (inspired by mcp2cli / Anthropic Tool Search).

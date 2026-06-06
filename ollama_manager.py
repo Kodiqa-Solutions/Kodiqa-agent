@@ -62,7 +62,7 @@ class OllamaManager:
         """Stop only the Ollama process WE started (don't pkill unrelated ones)."""
         if not self.agent._ollama_started_by_us:
             return
-        proc = getattr(self, "_ollama_proc", None)
+        proc = getattr(self.agent, "_ollama_proc", None)
         try:
             if proc and proc.poll() is None:
                 proc.terminate()
@@ -127,7 +127,7 @@ class OllamaManager:
         Called with show_welcome=False from /update (mid-session, banner already shown).
         """
 
-        if getattr(self, "_skip_updates", False) or not self.agent.config.get("check_updates", True):
+        if getattr(self.agent, "_skip_updates", False) or not self.agent.config.get("check_updates", True):
             return
         interval_h = self.agent.config.get("update_check_interval_hours", 24)
         last = self.agent.settings.get("last_update_check", 0)

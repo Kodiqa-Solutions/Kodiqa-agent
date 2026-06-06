@@ -278,6 +278,10 @@ MCP tools are automatically available to the AI alongside built-in tools.
 
 ### ⚡ Lazy MCP tools — save up to 94% of tool-schema tokens
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Kodiqa-Solutions/Kodiqa-agent/main/assets/demo-mcp-lazy.gif" alt="Lazy MCP tools demo — 14 tools discovered on demand, 3 schemas per turn instead of 14" width="800"/>
+</p>
+
 Most agents paste **every** MCP tool's JSON schema into **every** request, so a big
 MCP server quietly taxes every turn. Kodiqa doesn't. When servers are connected,
 it exposes **3 fixed meta-tools** and lets the model discover tools on demand:

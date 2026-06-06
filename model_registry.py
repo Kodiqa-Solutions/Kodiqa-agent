@@ -28,12 +28,12 @@ class ModelRegistry:
 
     def invalidate_model_cache(self):
         """Force the next _fetch_api_models() to re-fetch (e.g. after a key/region change)."""
-        if hasattr(self, "_cached_api_models"):
+        if hasattr(self.agent, "_cached_api_models"):
             self.agent._cached_api_models["_ts"] = 0
 
     def fetch_api_models(self):
         """Fetch live model lists from Claude and all OpenAI-compat APIs. Caches results."""
-        if not hasattr(self, "_cached_api_models"):
+        if not hasattr(self.agent, "_cached_api_models"):
             self.agent._cached_api_models = {"claude": [], "_ts": 0}
             for prov_name in OPENAI_COMPAT_PROVIDERS:
                 self.agent._cached_api_models[prov_name] = []
@@ -199,7 +199,7 @@ class ModelRegistry:
 
     def is_live_claude(self, model_name):
         """Check if model is in cached live Claude model list."""
-        cached = getattr(self, "_cached_api_models", None)
+        cached = getattr(self.agent, "_cached_api_models", None)
         return cached is not None and model_name in cached.get("claude", [])
 
     def get_provider_for_model(self, model_name):
@@ -207,7 +207,7 @@ class ModelRegistry:
         prov = get_openai_provider(model_name)
         if prov:
             return prov
-        cached = getattr(self, "_cached_api_models", {})
+        cached = getattr(self.agent, "_cached_api_models", {})
         for prov_name in OPENAI_COMPAT_PROVIDERS:
             if model_name in cached.get(prov_name, []):
                 return prov_name

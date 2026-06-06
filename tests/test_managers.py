@@ -76,3 +76,42 @@ class TestModelRegistryPure:
         agent = MagicMock()
         agent._cached_api_models = {}
         assert ModelRegistry(agent).get_provider_for_model("totally-made-up-model") is None
+
+
+class TestAgentStateAccess:
+    """Regression for the STEP 3 extraction: state the managers READ (via
+    getattr/hasattr) lives on the agent, not the manager. A bare `self` in those
+    calls silently broke --no-update, Ollama shutdown, and the live-model cache."""
+
+    def test_check_updates_honors_skip_flag(self):
+        # _skip_updates lives on the agent (set by --no-update / _cmd_update).
+        from ollama_manager import OllamaManager
+        agent = MagicMock()
+        agent._skip_updates = True
+        agent.config = {"check_updates": True}
+        OllamaManager(agent).check_updates()
+        agent._ensure_ollama.assert_not_called()  # returned before doing any work
+
+    def test_stop_ollama_uses_agent_proc(self):
+        # _ollama_proc lives on the agent; stop must actually terminate it.
+        from ollama_manager import OllamaManager
+        agent = MagicMock()
+        agent._ollama_started_by_us = True
+        proc = MagicMock()
+        proc.poll.return_value = None  # still running
+        agent._ollama_proc = proc
+        OllamaManager(agent).stop_ollama()
+        proc.terminate.assert_called_once()
+
+    def test_get_provider_reads_live_cache(self):
+        from model_registry import ModelRegistry
+        agent = MagicMock()
+        agent._cached_api_models = {"deepseek": ["some-live-model-id"]}
+        assert ModelRegistry(agent).get_provider_for_model("some-live-model-id") == "deepseek"
+
+    def test_is_live_claude_reads_cache(self):
+        from model_registry import ModelRegistry
+        agent = MagicMock()
+        agent._cached_api_models = {"claude": ["claude-live-xyz"]}
+        assert ModelRegistry(agent).is_live_claude("claude-live-xyz") is True
+        assert ModelRegistry(agent).is_live_claude("not-cached") is False

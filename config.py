@@ -283,6 +283,9 @@ PERSONAS = {
 # ── Changelog ──
 # Canonical changelog is CHANGELOG.md — this list powers the /changelog command
 CHANGELOG = [
+    {"version": "v3.8.1", "date": "2026-06-06", "changes": [
+        "Fixed: --no-update was ignored since 3.7.3 (a bare `self` in getattr after the God-class split); also fixes Ollama shutdown + live-model cache from the same refactor. Added a lazy-MCP demo GIF to the README + landing page.",
+    ]},
     {"version": "v3.8.0", "date": "2026-06-06", "changes": [
         "Lazy MCP tools (on by default): MCP servers now expose 3 meta-tools (mcp_search/mcp_tool_schema/mcp_call) for on-demand discovery instead of injecting every schema each turn — ~94% fewer tool-schema tokens for large servers. Usage-ranked. Toggle with /mcp lazy.",
     ]},
