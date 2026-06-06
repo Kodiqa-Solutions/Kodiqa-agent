@@ -309,6 +309,16 @@ class MCPManager:
             return server.tools
         return None
 
+    def add_source(self, name, server):
+        """Add and start any tool source implementing the server interface
+        (e.g. OpenAPIServer / GraphQLServer). Returns its tools, or None."""
+        if name in self.servers:
+            self.servers[name].stop()
+        if server.start():
+            self.servers[name] = server
+            return server.tools
+        return None
+
     def remove_server(self, name):
         """Stop and remove an MCP server."""
         if name in self.servers:
@@ -368,7 +378,9 @@ class MCPManager:
         lines = []
         for name, server in self.servers.items():
             tool_names = [t["name"] for t in server.tools]
-            kind = "http" if isinstance(server, MCPHttpServer) else "stdio"
+            kind = {"MCPServer": "stdio", "MCPHttpServer": "http",
+                    "OpenAPIServer": "openapi", "GraphQLServer": "graphql"}.get(
+                type(server).__name__, "tool")
             lines.append(f"  {name} [{kind}]: {len(server.tools)} tools ({', '.join(tool_names[:5])})")
         return "\n".join(lines)
 

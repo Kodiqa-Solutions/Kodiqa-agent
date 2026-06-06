@@ -14,7 +14,7 @@
   <a href="#install"><img src="https://img.shields.io/badge/python-3.9+-blue?logo=python&logoColor=white" alt="Python 3.9+"/></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-purple" alt="License"/></a>
   <a href="https://github.com/Kodiqa-Solutions/Kodiqa-agent/actions/workflows/ci.yml"><img src="https://github.com/Kodiqa-Solutions/Kodiqa-agent/actions/workflows/ci.yml/badge.svg" alt="CI"/></a>
-  <a href="#testing"><img src="https://img.shields.io/badge/tests-443%20passing-brightgreen" alt="Tests"/></a>
+  <a href="#testing"><img src="https://img.shields.io/badge/tests-452%20passing-brightgreen" alt="Tests"/></a>
   <a href="#api-setup"><img src="https://img.shields.io/badge/providers-7-cyan" alt="7 Providers"/></a>
   <a href="#26-tools"><img src="https://img.shields.io/badge/commands-76-orange" alt="76 Commands"/></a>
 </p>
@@ -42,7 +42,8 @@
 | **Local/offline** | Yes (Ollama) | No | No | No | Yes (Ollama) |
 | **API providers** | 7 (Ollama, Claude, OpenAI, DeepSeek, Groq, Mistral, Qwen) | 1 (Claude) | 10+ (OpenAI, Claude, etc.) | 1 (Gemini) | 75+ (OpenAI, Claude, Gemini, Ollama, etc.) |
 | **Tools** | 26 built-in | ~15 built-in | ~10 built-in | ~12 built-in | ~12 built-in |
-| **MCP support** | Yes | Yes | No | Yes | Yes |
+| **MCP support** | Yes (local + remote + OAuth) | Yes | No | Yes | Yes |
+| **OpenAPI / GraphQL as tools** | Yes | No | No | No | No |
 | **Lazy MCP tools** (token-efficient) | Yes (~94% fewer tokens) | No | No | No | No |
 | **Multi-model** | Yes (consensus mode) | No | No | No | No |
 | **Cross-provider failover** | Yes | No | No | No | No |
@@ -66,7 +67,7 @@
 | **Desktop app / IDE** | No | Yes (VS Code) | No | No | Yes (VS Code, desktop) |
 | **Install** | `pip install kodiqa` | `npm install -g` | `pip install` | `npm install -g` | `go install` / `npm` |
 | **Language** | Python | TypeScript | Python | TypeScript | Go |
-| **Tests** | 443 | Yes | Yes | Yes | Yes |
+| **Tests** | 452 | Yes | Yes | Yes | Yes |
 | **Open source** | Yes (AGPL-3.0) | Yes (Apache-2.0) | Yes (Apache-2.0) | Yes (Apache-2.0) | Yes (MIT) |
 
 **Kodiqa's unique advantages**: free local models, 7 API providers, multi-model consensus, custom plugins, sub-agents, LSP integration, 5 themes, project templates, batch edit review, conversation branching, budget limits, auto-lint, and auto model discovery — features no other agent offers together.
@@ -285,7 +286,12 @@ Connect external tool servers via the Model Context Protocol — **local or remo
 # …or machine-to-machine (no browser)
 /mcp add api https://example.com/mcp --oauth-client-id env:CID --oauth-client-secret env:CSEC
 
-/mcp list                                # show servers + transport ([http]/[stdio]) + lazy mode
+# Any REST API via its OpenAPI spec — each operation becomes a tool (no codegen)
+/mcp add petstore --spec https://petstore3.swagger.io/api/v3/openapi.json
+# Any GraphQL endpoint — each query/mutation becomes a tool
+/mcp add gql --graphql https://api.example.com/graphql --bearer env:TOKEN
+
+/mcp list                                # show servers + kind ([stdio]/[http]/[openapi]/[graphql]) + lazy mode
 /mcp remove mytools                      # disconnect
 /mcp lazy [on|off]                       # toggle lazy tool loading (default: on)
 ```

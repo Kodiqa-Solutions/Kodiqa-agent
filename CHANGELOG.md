@@ -4,6 +4,18 @@ All notable changes to Kodiqa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.14.0] - 2026-06-06
+
+OpenAPI + GraphQL tool sources — turn any REST or GraphQL API into tools, no codegen.
+
+### Added
+- **OpenAPI specs as tools** — `/mcp add <name> --spec <url|file> [--base-url U]`. Kodiqa reads the spec and exposes one tool per operation (path/query/body params become the tool's arguments); calling a tool issues the HTTP request. JSON specs work out of the box; YAML if `PyYAML` is installed.
+- **GraphQL endpoints as tools** — `/mcp add <name> --graphql <url>`. Kodiqa introspects the schema, exposes each query/mutation as a tool, auto-generates a selection set of the return type's scalar fields, and sends parameterized queries with variables.
+- Both reuse the existing auth flags (`--bearer`, `--header`, `env:`/`file:` secrets), show up in `/mcp list` with their kind (`[openapi]`/`[graphql]`), and work with **lazy mode** and **TOON** like any other tool source.
+
+### Tests
+- `test_api_tools.py` — spec/introspection parsing and real in-process HTTP servers exercising OpenAPI requests (path/query/body) and the GraphQL introspect→query flow. 452 total.
+
 ## [3.13.0] - 2026-06-06
 
 TOON output — token-efficient tool results.

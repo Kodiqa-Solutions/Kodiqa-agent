@@ -283,6 +283,9 @@ PERSONAS = {
 # ── Changelog ──
 # Canonical changelog is CHANGELOG.md — this list powers the /changelog command
 CHANGELOG = [
+    {"version": "v3.14.0", "date": "2026-06-06", "changes": [
+        "OpenAPI + GraphQL tool sources: /mcp add <name> --spec <url|file> turns a REST API into tools; --graphql <url> introspects a GraphQL endpoint. No codegen; works with lazy mode + TOON + auth flags.",
+    ]},
     {"version": "v3.13.0", "date": "2026-06-06", "changes": [
         "/toon (opt-in): re-encode JSON tool results into TOON — field names written once like a CSV header — for ~60% fewer tokens on large uniform arrays. Only used when genuinely shorter; non-JSON untouched.",
     ]},

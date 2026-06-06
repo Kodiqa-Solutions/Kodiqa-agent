@@ -4429,7 +4429,9 @@ class Kodiqa:
             if len(parts) < 3:
                 self.console.print("[dim]Usage:[/]")
                 self.console.print("[dim]  /mcp add <name> <command> [args...]        — local (stdio) server[/]")
-                self.console.print("[dim]  /mcp add <name> <https://url> [--bearer T] [--header K:V]  — remote (HTTP)[/]")
+                self.console.print("[dim]  /mcp add <name> <https://url> [--bearer T|--oauth] [--header K:V]  — remote MCP (HTTP)[/]")
+                self.console.print("[dim]  /mcp add <name> --spec <url|file> [--base-url U]  — OpenAPI REST API[/]")
+                self.console.print("[dim]  /mcp add <name> --graphql <url>  — GraphQL API[/]")
                 self.console.print("[dim]  token values support env:VAR and file:PATH[/]")
                 return
             import shlex
@@ -4438,6 +4440,9 @@ class Kodiqa:
                 tokens = shlex.split(parts[2])
             except ValueError:
                 tokens = parts[2].split()
+            if "--spec" in tokens or "--graphql" in tokens:
+                self._add_api_source(name, tokens)
+                return
             target = tokens[0]
             is_remote = target.startswith("http://") or target.startswith("https://")
             flags = tokens[1:]
@@ -4539,6 +4544,29 @@ class Kodiqa:
             self.console.print("  [green]OAuth authorized.[/]")
             return sess
         return None
+
+    def _add_api_source(self, name, tokens):
+        """Add an OpenAPI (--spec) or GraphQL (--graphql) endpoint as a tool source."""
+        from api_tools import OpenAPIServer, GraphQLServer
+
+        def flagval(flag):
+            return tokens[tokens.index(flag) + 1] if flag in tokens and tokens.index(flag) + 1 < len(tokens) else None
+        spec = flagval("--spec")
+        gql = flagval("--graphql")
+        base = flagval("--base-url")
+        headers = self._parse_mcp_auth(tokens)  # reuses --bearer/--header/env:/file:
+        with Status(f"  [dim]Loading {name}…[/]", console=self.console, spinner="dots"):
+            if gql:
+                kind, tools = "GraphQL", self.mcp.add_source(name, GraphQLServer(name, gql, headers))
+            else:
+                kind, tools = "OpenAPI", self.mcp.add_source(name, OpenAPIServer(name, spec, base, headers))
+        if tools is not None:
+            tool_names = [t["name"] for t in tools]
+            self.console.print(f"  [green]Connected: {name}[/] [dim]({kind})[/] "
+                               f"({len(tools)} tools: {', '.join(tool_names[:5])})")
+        else:
+            self.console.print(f"  [red]Failed to load {kind} source '{name}'.[/]")
+            self.console.print("  [dim]Check the URL/spec path (OpenAPI YAML needs PyYAML), --base-url, and any auth.[/]")
 
     def _load_kodiqaignore(self):
         """Load .kodiqaignore from cwd and merge into skip sets."""
