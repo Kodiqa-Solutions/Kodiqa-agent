@@ -16,6 +16,9 @@ from rich.panel import Panel
 
 from config import OLLAMA_URL, is_claude_model
 
+import logging
+_logger = logging.getLogger("kodiqa")
+
 
 class AgentTeam:
     def __init__(self, agent):
@@ -111,7 +114,7 @@ class AgentTeam:
                         if diff.stdout.strip():
                             self.agent._agents[agent_id]["worktree_diff"] = diff.stdout[:5000]
                     except Exception:
-                        pass
+                        _logger.debug("ignored error in worker", exc_info=True)
 
         t = threading.Thread(target=worker, daemon=True)
         t.start()

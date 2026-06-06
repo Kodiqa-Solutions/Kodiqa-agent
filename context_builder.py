@@ -12,6 +12,9 @@ import sys
 
 from config import PERSONAS, CONTEXT_FILE, KODIQA_DIR
 
+import logging
+_logger = logging.getLogger("kodiqa")
+
 
 class ContextBuilder:
     def __init__(self, agent):
@@ -52,7 +55,7 @@ class ContextBuilder:
                 rel = os.path.relpath(path, self.agent.cwd) if path.startswith(self.agent.cwd) else path
                 parts.append(f"### {rel}\n```\n{content}\n```")
             except Exception:
-                pass
+                _logger.debug("ignored error in build_pinned_context", exc_info=True)
         return "\n\n".join(parts) if len(parts) > 1 else ""
 
     def shell_env_context(self):
@@ -158,7 +161,7 @@ class ContextBuilder:
                 if content:
                     parts.append(f"## Global Context (from ~/.kodiqa/KODIQA.md)\n{content}")
             except Exception:
-                pass
+                _logger.debug("ignored error in load_context_file", exc_info=True)
         project_ctx = self.agent._get_project_context_path()
         if os.path.isfile(project_ctx):
             try:
@@ -167,5 +170,5 @@ class ContextBuilder:
                 if content:
                     parts.append(f"## Project Context ({self.agent.cwd})\n{content}")
             except Exception:
-                pass
+                _logger.debug("ignored error in load_context_file", exc_info=True)
         return "\n\n".join(parts)

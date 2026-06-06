@@ -18,6 +18,9 @@ from config import (
     get_openai_provider,
 )
 
+import logging
+_logger = logging.getLogger("kodiqa")
+
 
 class ModelRegistry:
     def __init__(self, agent):
@@ -54,7 +57,7 @@ class ModelRegistry:
                             claude_models.append(mid)
                     claude_models.sort()
             except Exception:
-                pass
+                _logger.debug("ignored error in fetch_api_models", exc_info=True)
         # Fetch all OpenAI-compatible provider models
         result = {"claude": claude_models, "_ts": time.time()}
         for prov_name, prov in OPENAI_COMPAT_PROVIDERS.items():
@@ -77,7 +80,7 @@ class ModelRegistry:
                             models.append(mid)
                     models.sort()
             except Exception:
-                pass
+                _logger.debug("ignored error in fetch_api_models", exc_info=True)
             result[prov_name] = models
         self.agent._cached_api_models = result
         return self.agent._cached_api_models

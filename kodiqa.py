@@ -55,7 +55,7 @@ from mcp import MCPManager
 # ── Error logging and API retry ──
 
 ERROR_LOG = os.path.join(KODIQA_DIR, "error.log")
-_logger = None
+_logger = logging.getLogger("kodiqa")
 
 
 def _setup_error_log():
@@ -73,11 +73,15 @@ def _setup_error_log():
         except Exception:
             pass
     logger = logging.getLogger("kodiqa")
-    if not logger.handlers:
+    # Add the file handler if not present yet (a NullHandler from config import may
+    # already be attached, so check for a FileHandler specifically).
+    if not any(isinstance(h, logging.FileHandler) for h in logger.handlers):
         handler = logging.FileHandler(ERROR_LOG)
         handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
         logger.addHandler(handler)
-    logger.setLevel(logging.WARNING)
+    # KODIQA_DEBUG surfaces the otherwise-silent swallowed-exception logs (DEBUG) in
+    # error.log; default stays WARNING so routine best-effort failures don't accumulate.
+    logger.setLevel(logging.DEBUG if os.environ.get("KODIQA_DEBUG") else logging.WARNING)
     _logger = logger
     return logger
 
@@ -749,7 +753,7 @@ class Kodiqa:
             script = f'display notification "{body}" with title "{title}" sound name "Glass"'
             subprocess.run(["osascript", "-e", script], capture_output=True, timeout=5)
         except Exception:
-            pass
+            _logger.debug("ignored error in _send_notification", exc_info=True)
 
     def _check_cost_optimizer(self, user_msg):
         """Suggest cheaper model if message is simple and model is expensive."""
@@ -898,7 +902,7 @@ class Kodiqa:
                 self.console.print(f"  [dim]+ clipboard image ({len(data) * 3 // 4 // 1024}KB)[/]")
                 return {"path": "clipboard", "media_type": "image/png", "data": data}
         except Exception:
-            pass
+            _logger.debug("ignored error in _paste_clipboard_image", exc_info=True)
         return None
 
     def _append_files_to_text(self, text, files):
@@ -1089,7 +1093,7 @@ class Kodiqa:
                     installed = [m["name"] for m in resp.json().get("models", [])]
                     local_ok = any(m.startswith(self.model.split(":")[0]) for m in installed)
                 except Exception:
-                    pass
+                    _logger.debug("ignored error in _welcome", exc_info=True)
                 if local_ok:
                     provider = "[green]Local/Ollama[/]"
                 else:
@@ -1214,17 +1218,17 @@ class Kodiqa:
         try:
             self.mcp.stop_all()
         except Exception:
-            pass
+            _logger.debug("ignored error in _cleanup_children", exc_info=True)
         try:
             if getattr(self, "_lsp_client", None):
                 self._lsp_client.stop()
                 self._lsp_client = None
         except Exception:
-            pass
+            _logger.debug("ignored error in _cleanup_children", exc_info=True)
         try:
             self._stop_ollama()
         except Exception:
-            pass
+            _logger.debug("ignored error in _cleanup_children", exc_info=True)
 
     def _stop_ollama(self):
         return self.ollama.stop_ollama()
@@ -3129,7 +3133,7 @@ class Kodiqa:
                     self.console.print(f"  • Or add API key: [bold]/key[/]")
                 return
         except Exception:
-            pass
+            _logger.debug("ignored error in _chat_ollama", exc_info=True)
         # Embed @file references (images as text fallback for local models)
         msg_text = self._append_files_to_text(user_msg, self._pending_files)
         if self._pending_images:
@@ -3843,12 +3847,12 @@ class Kodiqa:
                             self._stream_interrupted = True
                             break
             except Exception:
-                pass
+                _logger.debug("ignored error in _esc_monitor", exc_info=True)
             finally:
                 try:
                     termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
                 except Exception:
-                    pass
+                    _logger.debug("ignored error in _esc_monitor", exc_info=True)
 
         t = threading.Thread(target=_esc_monitor, daemon=True)
         t.start()
@@ -4163,7 +4167,7 @@ class Kodiqa:
             subprocess.run(["git", "commit", "-m", msg], capture_output=True, timeout=10)
             self.console.print(f"  [green]●[/] [dim]Auto-committed: {msg}[/]")
         except Exception:
-            pass
+            _logger.debug("ignored error in _auto_commit_if_enabled", exc_info=True)
 
     def _run_lint_if_enabled(self):
         """Run lint command after edits if configured."""
@@ -4347,7 +4351,7 @@ class Kodiqa:
             try:
                 subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=60, cwd=self.cwd)
             except Exception:
-                pass
+                _logger.debug("ignored error in _handle_init", exc_info=True)
         self.console.print(f"[green]Project initialized from template: {name}[/]")
 
     # ── Phase 3: Plugins ──
@@ -4410,7 +4414,7 @@ class Kodiqa:
             subprocess.run(["git", "branch", "-D", branch],
                           capture_output=True, text=True, timeout=5, cwd=self.cwd)
         except Exception:
-            pass
+            _logger.debug("ignored error in _cleanup_agent_worktree", exc_info=True)
 
     def _handle_agent(self, arg):
         return self.agent_team.handle_agent(arg)
@@ -4518,7 +4522,7 @@ class Kodiqa:
                     if resp.ok:
                         text = resp.json().get("text", "")
             except Exception:
-                pass
+                _logger.debug("ignored error in _handle_voice", exc_info=True)
 
         if not text:
             self.console.print("[dim]Transcription failed. Need OpenAI API key for Whisper.[/]")
@@ -4731,7 +4735,7 @@ class Kodiqa:
                     if m:
                         triggers.append((i, m.group(1).strip()))
         except Exception:
-            pass
+            _logger.debug("ignored error in _scan_ai_triggers", exc_info=True)
         return triggers
 
     def _remove_ai_trigger(self, filepath, line_num):
@@ -4750,7 +4754,7 @@ class Kodiqa:
                 with open(filepath, 'w') as f:
                     f.writelines(lines)
         except Exception:
-            pass
+            _logger.debug("ignored error in _remove_ai_trigger", exc_info=True)
 
     def _handle_embed(self, arg):
         try:
@@ -4784,7 +4788,7 @@ class Kodiqa:
                             count += 1
                             status.update(f"Embedding... {count} files")
                         except Exception:
-                            pass
+                            _logger.debug("ignored error in _handle_embed", exc_info=True)
         except Exception as e:
             self.console.print(f"[red]Embedding error: {e}[/]")
         store.close()
@@ -4942,7 +4946,7 @@ class Kodiqa:
                 if os.path.isfile(tmp_out):
                     self.console.print(f"  [dim]Diagram saved: {tmp_out}[/]")
             except Exception:
-                pass
+                _logger.debug("ignored error in _render_diagrams", exc_info=True)
 
     @staticmethod
     def _arrow_select(options, console, default=0):
@@ -5087,7 +5091,7 @@ def _tool_label(name, params):
         try:
             return fn()
         except Exception:
-            pass
+            _logger.debug("ignored error in _tool_label", exc_info=True)
     return name
 
 
@@ -5117,8 +5121,12 @@ def main():
                         help="Resume the most recent session without prompting")
     parser.add_argument("--resume", nargs="?", const="", metavar="ID",
                         help="Resume a saved history session by id (most recent if no id given)")
+    parser.add_argument("--debug", action="store_true",
+                        help="Log swallowed/internal errors (DEBUG) to ~/.kodiqa/error.log")
     args = parser.parse_args()
 
+    if args.debug:
+        os.environ["KODIQA_DEBUG"] = "1"  # set before Kodiqa() so _setup_error_log honors it
     kodiqa = Kodiqa()
     if args.no_update:
         kodiqa._skip_updates = True

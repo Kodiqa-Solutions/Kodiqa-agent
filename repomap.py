@@ -7,6 +7,9 @@ Falls back to regex-based extraction if tree-sitter is not installed.
 import os
 import re
 
+import logging
+_logger = logging.getLogger("kodiqa")
+
 # Language detection by file extension
 LANG_MAP = {
     ".py": "python", ".js": "javascript", ".ts": "typescript", ".tsx": "typescript",
@@ -67,7 +70,7 @@ class RepoMap:
                             kind = groups[0].strip() if len(groups) > 1 else ""
                             symbols.append({"name": name, "kind": kind, "line": i})
         except Exception:
-            pass
+            _logger.debug("ignored error in _extract_symbols_regex", exc_info=True)
         return symbols
 
     def _extract_symbols_treesitter(self, filepath, lang):

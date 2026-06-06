@@ -462,7 +462,7 @@ def do_write_file(path, content):
             with open(path, "r", errors="replace") as f:
                 old_content = f.read()
         except Exception:
-            pass
+            _logger.debug("ignored error in do_write_file", exc_info=True)
     # Batch mode: queue the edit for review instead of applying
     if _batch_mode:
         _edit_queue.append({
@@ -884,14 +884,14 @@ def do_read_pdf(path):
             try:
                 text_parts.append(match.group(1).decode("utf-8", errors="ignore"))
             except Exception:
-                pass
+                _logger.debug("ignored error in do_read_pdf", exc_info=True)
         if text_parts:
             text = " ".join(text_parts)
             if len(text) > MAX_FILE_SIZE:
                 text = text[:MAX_FILE_SIZE] + "\n... (truncated)"
             return text
     except Exception:
-        pass
+        _logger.debug("ignored error in do_read_pdf", exc_info=True)
     return f"Could not extract text from {path}. Install pdftotext: brew install poppler"
 
 

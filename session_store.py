@@ -13,6 +13,9 @@ from rich.prompt import Prompt
 
 from config import KODIQA_DIR
 
+import logging
+_logger = logging.getLogger("kodiqa")
+
 
 class SessionStore:
     def __init__(self, agent):
@@ -41,7 +44,7 @@ class SessionStore:
             with open(agent.session_file, "w") as f:
                 json.dump(data, f)
         except Exception:
-            pass
+            _logger.debug("ignored error in save", exc_info=True)
 
     def load(self):
         """Offer to resume previous session if it exists."""
@@ -81,7 +84,7 @@ class SessionStore:
             except (EOFError, KeyboardInterrupt):
                 os.remove(agent.session_file)
         except Exception:
-            pass
+            _logger.debug("ignored error in load", exc_info=True)
 
     def resume_from_history(self, session_id):
         """Resume a saved history session by id (or the most recent when id is None).
@@ -128,7 +131,7 @@ class SessionStore:
             if os.path.isfile(self.agent.session_file):
                 os.remove(self.agent.session_file)
         except Exception:
-            pass
+            _logger.debug("ignored error in clear", exc_info=True)
 
     def archive(self):
         """Save current session to the history index on quit."""
@@ -175,4 +178,4 @@ class SessionStore:
             with open(session_file, "w") as f:
                 json.dump({"model": agent.model, "cwd": agent.cwd, "history": saveable}, f)
         except Exception:
-            pass
+            _logger.debug("ignored error in archive", exc_info=True)

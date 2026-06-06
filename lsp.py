@@ -5,6 +5,9 @@ import os
 import subprocess
 import threading
 
+import logging
+_logger = logging.getLogger("kodiqa")
+
 
 # Language server commands
 LSP_SERVERS = {
@@ -91,7 +94,7 @@ class LSPClient:
                 try:
                     self.process.kill()
                 except Exception:
-                    pass
+                    _logger.debug("ignored error in stop", exc_info=True)
             self.process = None
             self.language = None
 

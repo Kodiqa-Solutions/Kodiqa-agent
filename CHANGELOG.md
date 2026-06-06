@@ -4,6 +4,20 @@ All notable changes to Kodiqa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.7.4] - 2026-06-06
+
+Observability — clears the last item from the 2026-06-06 audit (silent error handlers).
+
+### Changed
+- **No more truly-silent error swallowing.** The 44 broad `except Exception: pass` catch-alls across the codebase now log via the `kodiqa` logger at DEBUG with a traceback and the enclosing function name. Behavior is unchanged (errors are still swallowed), and the default log level stays WARNING so nothing new is written to `~/.kodiqa/error.log` during normal use. (Narrow, intentional handlers like `except FileNotFoundError` were left quiet.)
+
+### Added
+- **`--debug` flag** (and `KODIQA_DEBUG=1` env var) — lowers the log level to DEBUG so the swallowed-error traces show up in `~/.kodiqa/error.log` when you're chasing a problem.
+- A `NullHandler` on the package logger so pre-startup log calls never leak to stderr.
+
+### Tests
+- `test_logging.py` — swallowed errors are logged at DEBUG with exc_info, stay silent at WARNING, behavior unchanged, and the file handler is set up idempotently. 366 total.
+
 ## [3.7.3] - 2026-06-06
 
 Internal refactor — no user-facing behavior change. Finishes splitting the `Kodiqa` God-class into focused modules.

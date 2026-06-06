@@ -18,6 +18,9 @@ from rich.status import Status
 
 from config import OLLAMA_URL, OLLAMA_BIN, save_settings
 
+import logging
+_logger = logging.getLogger("kodiqa")
+
 
 class OllamaManager:
     def __init__(self, agent):
@@ -30,7 +33,7 @@ class OllamaManager:
             requests.get(f"{OLLAMA_URL}/api/tags", timeout=3)
             return True  # Already running
         except Exception:
-            pass
+            _logger.debug("ignored error in ensure_ollama", exc_info=True)
         # Try to start Ollama
         self.agent.console.print("[dim]Starting Ollama...[/]")
         try:
@@ -51,7 +54,7 @@ class OllamaManager:
                 except Exception:
                     continue
         except Exception:
-            pass
+            _logger.debug("ignored error in ensure_ollama", exc_info=True)
         self.agent.console.print("[yellow]●[/] Could not start Ollama [dim](start manually: ollama serve)[/]")
         return False
 
@@ -70,12 +73,12 @@ class OllamaManager:
                     try:
                         proc.wait(timeout=5)
                     except Exception:
-                        pass
+                        _logger.debug("ignored error in stop_ollama", exc_info=True)
                 self.agent.console.print("[green]●[/] Ollama stopped")
             self.agent._ollama_started_by_us = False
             self.agent._ollama_proc = None
         except Exception:
-            pass
+            _logger.debug("ignored error in stop_ollama", exc_info=True)
 
     def fetch_ollama_library(self, installed):
         """Fetch available models from ollama.com/library, filter out already installed."""
@@ -138,7 +141,7 @@ class OllamaManager:
         try:
             save_settings(self.agent.settings)
         except Exception:
-            pass
+            _logger.debug("ignored error in check_updates", exc_info=True)
 
         try:
             # Get installed models
@@ -176,7 +179,7 @@ class OllamaManager:
                                 new_digest = m.get("digest")
                                 break
                     except Exception:
-                        pass
+                        _logger.debug("ignored error in check_updates", exc_info=True)
                     if old_digest and new_digest and new_digest != old_digest:
                         self.agent.console.print(f"  [green]●[/] {model_name} [bold green]updated![/]")
                         updated_count += 1

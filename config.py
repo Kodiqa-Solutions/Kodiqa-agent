@@ -4,6 +4,13 @@ import json
 import os
 import shutil
 
+import logging
+# A NullHandler on the package logger keeps pre-setup log calls (config/settings
+# load runs before _setup_error_log attaches the file handler) from falling back
+# to logging's lastResort stderr handler — no surprise console output.
+_logger = logging.getLogger("kodiqa")
+_logger.addHandler(logging.NullHandler())
+
 OLLAMA_URL = "http://localhost:11434"
 # Resolve the ollama binary cross-platform: explicit env override, then PATH, then
 # the macOS app bundle as a last resort. (Hardcoding the .app path broke Linux/Windows.)
@@ -276,6 +283,9 @@ PERSONAS = {
 # ── Changelog ──
 # Canonical changelog is CHANGELOG.md — this list powers the /changelog command
 CHANGELOG = [
+    {"version": "v3.7.4", "date": "2026-06-06", "changes": [
+        "Observability: silent error handlers now log to ~/.kodiqa/error.log (DEBUG). New --debug flag / KODIQA_DEBUG env surfaces them. No behavior change. Clears the last audit item.",
+    ]},
     {"version": "v3.7.3", "date": "2026-06-06", "changes": [
         "Internal: finished splitting the God-class — extracted ContextBuilder, OllamaManager, ModelRegistry, and AgentTeam into their own modules. No behavior change.",
     ]},
@@ -383,7 +393,7 @@ def load_kodiqaignore(cwd):
                 else:
                     extra_dirs.add(line.rstrip("/"))
     except Exception:
-        pass
+        _logger.debug("ignored error in load_kodiqaignore", exc_info=True)
     return extra_dirs, extra_exts
 
 
@@ -396,7 +406,7 @@ def load_config():
                 user_config = json.load(f)
             config.update(user_config)
         except Exception:
-            pass
+            _logger.debug("ignored error in load_config", exc_info=True)
     return config
 
 
@@ -415,7 +425,7 @@ def load_settings():
             with open(SETTINGS_FILE, "r") as f:
                 return json.load(f)
         except Exception:
-            pass
+            _logger.debug("ignored error in load_settings", exc_info=True)
     return {}
 
 

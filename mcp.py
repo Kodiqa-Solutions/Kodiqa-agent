@@ -118,7 +118,7 @@ class MCPServer:
             self.process.stdin.write(line)
             self.process.stdin.flush()
         except Exception:
-            pass
+            _logger.debug("ignored error in _notify", exc_info=True)
 
     def stop(self):
         """Stop the MCP server process."""
@@ -131,7 +131,7 @@ class MCPServer:
                 try:
                     self.process.wait(timeout=5)  # reap, don't leave a zombie
                 except Exception:
-                    pass
+                    _logger.debug("ignored error in stop", exc_info=True)
 
     def get_tool_schemas(self):
         """Convert MCP tools to Claude-compatible tool schemas."""
