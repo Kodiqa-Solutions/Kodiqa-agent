@@ -37,6 +37,7 @@ from config import (
     is_claude_model, get_openai_provider,
 )
 from memory import MemoryStore
+from session_store import SessionStore
 from actions import (
     parse_actions, execute_action, execute_tool_call, execute_tools_parallel, set_console,
     set_batch_mode, get_edit_queue, clear_edit_queue, apply_queued_edit, reject_queued_edit,
@@ -503,6 +504,7 @@ class Kodiqa:
         set_console(self.console)  # share console with actions.py for diff display
         set_hooks(load_config().get("hooks", {}))
         self.memory = MemoryStore()
+        self.sessions = SessionStore(self)  # conversation persistence (session_store.py)
         self.history = []
         self.cwd = os.getcwd()
         self.settings = load_settings()
@@ -1142,114 +1144,19 @@ class Kodiqa:
 
     # ── Session save/load for conversation recovery ──
 
+    # Session persistence lives in SessionStore (session_store.py); these are thin
+    # wrappers so existing call sites stay unchanged.
     def _save_session(self):
-        """Auto-save conversation to disk for recovery."""
-        try:
-            # Save full history (str AND content-block/tool_calls messages) so assistant
-            # turns aren't lost on restore. Only trim a trailing *unresolved* tool call
-            # (an assistant turn issuing tools with no following results) — restoring that
-            # would 400, since the next request would have tool_use/tool_calls with no result.
-            def _unresolved_toolcall(m):
-                if m.get("role") != "assistant":
-                    return False
-                if m.get("tool_calls"):  # OpenAI-compat format
-                    return True
-                c = m.get("content")
-                return isinstance(c, list) and any(
-                    isinstance(b, dict) and b.get("type") == "tool_use" for b in c)
-            saveable = list(self.history)
-            while saveable and _unresolved_toolcall(saveable[-1]):
-                saveable.pop()
-            data = {"model": self.model, "cwd": self.cwd, "history": saveable}
-            with open(self.session_file, "w") as f:
-                json.dump(data, f)
-        except Exception:
-            pass
+        self.sessions.save()
 
     def _load_session(self):
-        """Offer to resume previous session if it exists."""
-        if not os.path.isfile(self.session_file):
-            return
-        try:
-            with open(self.session_file, "r") as f:
-                data = json.load(f)
-            history = data.get("history", [])
-            if len(history) < 2:
-                os.remove(self.session_file)
-                return
-            msg_count = len([m for m in history if m.get("role") == "user"])
-
-            def _restore(d, h):
-                self.history = h
-                self.model = d.get("model", self.model)
-                saved_cwd = d.get("cwd", self.cwd)
-                if os.path.isdir(saved_cwd):
-                    self.cwd = saved_cwd
-                    os.chdir(self.cwd)
-
-            # -c / --continue: skip the prompt and resume straight away.
-            if self._auto_resume:
-                _restore(data, history)
-                self.console.print(f"[green]Resumed previous session ({msg_count} messages).[/]")
-                return
-            self.console.print(f"[dim]Previous session found ({msg_count} messages). Resume? (y/n)[/]")
-            try:
-                answer = Prompt.ask("Resume", choices=["y", "n"], default="y")
-                if answer.lower() == "y":
-                    _restore(data, history)
-                    self.console.print("[green]Session restored.[/]")
-                else:
-                    os.remove(self.session_file)
-            except (EOFError, KeyboardInterrupt):
-                os.remove(self.session_file)
-        except Exception:
-            pass
+        self.sessions.load()
 
     def _resume_from_history(self, session_id):
-        """Resume a saved history session by id (or the most recent when id is None).
-
-        Used by the `--resume [ID]` CLI flag; mirrors the `/history resume` path.
-        """
-        history_dir = os.path.join(KODIQA_DIR, "history")
-        index_file = os.path.join(history_dir, "index.json")
-        if not os.path.isfile(index_file):
-            self.console.print("[dim]No session history to resume.[/]")
-            return
-        try:
-            with open(index_file, "r") as f:
-                index = json.load(f)
-        except Exception:
-            index = []
-        if not index:
-            self.console.print("[dim]No session history to resume.[/]")
-            return
-        if not session_id:  # most recent
-            session_id = str(index[-1].get("id", ""))
-        session_file = os.path.join(history_dir, f"session_{session_id}.json")
-        if not os.path.isfile(session_file):
-            self.console.print(f"[red]Session {session_id} not found.[/] Use [bold]/history[/] to list them.")
-            return
-        try:
-            with open(session_file, "r") as f:
-                data = json.load(f)
-        except Exception:
-            self.console.print(f"[red]Could not read session {session_id}.[/]")
-            return
-        self.history = data.get("history", [])
-        self.model = data.get("model", self.model)
-        saved_cwd = data.get("cwd", self.cwd)
-        if os.path.isdir(saved_cwd):
-            self.cwd = saved_cwd
-            os.chdir(self.cwd)
-        self.console.print(f"[green]Resumed session {session_id} ({len(self.history)} messages).[/]")
+        self.sessions.resume_from_history(session_id)
 
     def _clear_session(self):
-        """Remove saved session file."""
-        try:
-            if os.path.isfile(self.session_file):
-                os.remove(self.session_file)
-        except Exception:
-            pass
+        self.sessions.clear()
 
     def _get_project_context_path(self):
         safe_name = self.cwd.strip("/").replace("/", "-")
@@ -1351,50 +1258,7 @@ class Kodiqa:
             s["searches"] += 1
 
     def _save_session_to_history(self):
-        """Save current session to history index on quit."""
-        user_msgs = [m for m in self.history if m.get("role") == "user"]
-        if len(user_msgs) < 2:
-            return
-        try:
-            import datetime
-            history_dir = os.path.join(KODIQA_DIR, "history")
-            os.makedirs(history_dir, exist_ok=True)
-            first_user = next(
-                (m["content"] for m in self.history
-                 if m.get("role") == "user" and isinstance(m.get("content"), str)),
-                "",
-            )
-            entry = {
-                "timestamp": datetime.datetime.now().isoformat(),
-                "model": self.model,
-                "cwd": self.cwd,
-                "messages": len(self.history),
-                "user_messages": len(user_msgs),
-                "cost": self.session_tokens.get("cost", 0),
-                "tools_used": sum(self._session_stats.get("tools_used", {}).values()),
-                "topic": first_user[:100],
-            }
-            index_file = os.path.join(history_dir, "index.json")
-            index = []
-            if os.path.isfile(index_file):
-                try:
-                    with open(index_file, "r") as f:
-                        index = json.load(f)
-                except Exception:
-                    index = []
-            entry["id"] = len(index) + 1
-            index.append(entry)
-            if len(index) > 100:
-                index = index[-100:]
-            with open(index_file, "w") as f:
-                json.dump(index, f, indent=2)
-            # Save full session
-            saveable = [m for m in self.history if isinstance(m.get("content"), str)]
-            session_file = os.path.join(history_dir, f"session_{entry['id']}.json")
-            with open(session_file, "w") as f:
-                json.dump({"model": self.model, "cwd": self.cwd, "history": saveable}, f)
-        except Exception:
-            pass
+        self.sessions.archive()
 
     def _save_session_summary(self):
         """Auto-save conversation summary to project context file on quit."""
@@ -3648,6 +3512,216 @@ class Kodiqa:
         except Exception as e:
             return f"Consensus error: {e}"
 
+    # ── Shared chat-loop machinery (used by all providers) ──
+
+    def _build_system_prompt(self, template):
+        """Assemble the full system prompt: base template + persona + context +
+        git + shell env + pinned files. Shared by every provider's chat loop."""
+        memories_ctx = self.memory.get_context()
+        context_file_ctx = self._load_context_file()
+        system_prompt = template.format(cwd=self.cwd, model=self.model, memories=memories_ctx)
+        if self._persona and self._persona in PERSONAS:
+            system_prompt = PERSONAS[self._persona]["prompt"] + "\n\n" + system_prompt
+        if context_file_ctx:
+            system_prompt += "\n\n" + context_file_ctx
+        git_ctx = self._git_context()
+        if git_ctx:
+            system_prompt += "\n\n" + git_ctx
+        env_ctx = self._shell_env_context()
+        if env_ctx:
+            system_prompt += "\n\n" + env_ctx
+        pinned_ctx = self._build_pinned_context()
+        if pinned_ctx:
+            system_prompt += "\n\n" + pinned_ctx
+        return system_prompt
+
+    def _maybe_lint_fix(self, lint_errors):
+        """If auto lint-fix is on and there are errors, queue a fix request and
+        signal the loop to continue. Returns True if the caller should `continue`."""
+        if lint_errors and self.lint_auto_fix:
+            if not hasattr(self, '_lint_fix_count'):
+                self._lint_fix_count = 0
+            self._lint_fix_count += 1
+            if self._lint_fix_count <= 3:
+                self.console.print(f"  [cyan]●[/] Auto lint-fix iteration {self._lint_fix_count}/3...")
+                self.history.append({"role": "user", "content": f"Fix these lint errors (attempt {self._lint_fix_count}/3):\n{lint_errors}"})
+                return True
+            else:
+                self.console.print(f"  [yellow]●[/] Lint auto-fix: max iterations reached, still has errors.")
+                self._lint_fix_count = 0
+        return False
+
+    # ── Native tool-calling chat loop (Claude + all OpenAI-compatible providers) ──
+
+    def _run_native_chat(self, user_msg, kind, provider=None):
+        """One agentic loop for every native tool-calling provider. `kind` is
+        "claude" or "openai"; only the message/assistant/result *formats* differ,
+        which are handled by the small per-kind seams below."""
+        # Embed @file references and images into the user message (per-kind format).
+        msg_text = self._append_files_to_text(user_msg, self._pending_files)
+        if self._pending_images:
+            content = [{"type": "text", "text": msg_text}]
+            for img in self._pending_images:
+                if kind == "claude":
+                    content.append({"type": "image", "source": {
+                        "type": "base64", "media_type": img["media_type"], "data": img["data"],
+                    }})
+                else:
+                    content.append({"type": "image_url", "image_url": {
+                        "url": f"data:{img['media_type']};base64,{img['data']}",
+                    }})
+            self.history.append({"role": "user", "content": content})
+        else:
+            self.history.append({"role": "user", "content": msg_text})
+        self._pending_files = []
+        self._pending_images = []
+
+        _iteration = 0
+        _max_iter = self.config.get("max_iterations", 15)
+        while True:
+            _iteration += 1
+            if _iteration > _max_iter:
+                self.console.print(f"[yellow]Reached max iterations ({_max_iter}). Stopping — raise max_iterations in /config if needed.[/]")
+                break
+            system_prompt = self._build_system_prompt(CLAUDE_SYSTEM)
+            if kind == "claude":
+                messages = self._build_claude_messages()
+                response = self._call_claude_stream(system_prompt, messages)
+            else:
+                messages = self._build_openai_messages(system_prompt)
+                response = self._call_openai_compat_stream(messages, provider)
+            if response is None:
+                return
+            if self._stream_interrupted:
+                text_content = response.get("text", "")
+                if text_content:
+                    self.history.append(self._assistant_msg(kind, text_content, []))
+                self._save_session()
+                return
+
+            text_content = response.get("text", "")
+            tool_calls = response.get("tool_calls", [])
+            self.history.append(self._assistant_msg(kind, text_content, tool_calls))
+
+            if not tool_calls:
+                self._save_session()
+                return
+
+            results_list, lint_errors = self._run_tool_calls(tool_calls)
+            self._append_tool_results(kind, results_list)
+            self._save_session()
+            if self._maybe_lint_fix(lint_errors):
+                continue
+
+    def _assistant_msg(self, kind, text_content, tool_calls):
+        """Build the assistant history entry in the provider's native format."""
+        if kind == "claude":
+            assistant_content = []
+            if text_content:
+                assistant_content.append({"type": "text", "text": text_content})
+            for tc in tool_calls:
+                assistant_content.append({
+                    "type": "tool_use",
+                    "id": tc["id"],
+                    "name": tc["name"],
+                    "input": tc["input"],
+                })
+            return {"role": "assistant", "content": assistant_content}
+        # openai-compatible
+        msg = {"role": "assistant", "content": text_content or None}
+        if tool_calls:
+            msg["tool_calls"] = [
+                {
+                    "id": tc["id"],
+                    "type": "function",
+                    "function": {"name": tc["name"], "arguments": json.dumps(tc["input"])},
+                }
+                for tc in tool_calls
+            ]
+        return msg
+
+    def _run_tool_calls(self, tool_calls):
+        """Execute a turn's tool calls (MCP + regular, parallel/single), review
+        queued edits, auto-commit, and lint. Returns (results_list, lint_errors).
+        Shared by both native loops."""
+        if self.batch_edits:
+            set_batch_mode(True)
+        mcp_calls = [tc for tc in tool_calls if tc["name"].startswith("mcp_")]
+        regular_calls = [tc for tc in tool_calls if not tc["name"].startswith("mcp_")]
+        results_list = []
+        if len(regular_calls) > 1:
+            allowed_calls, results_list = self._partition_workspace(regular_calls)
+            if allowed_calls:
+                with Status(f"  [yellow]●[/] Running {len(allowed_calls)} tools...", console=self.console, spinner="dots"):
+                    results_list = list(results_list) + execute_tools_parallel(allowed_calls, self.memory, self._confirm)
+            for tc_id, result in results_list:
+                tc_name = next((tc["name"] for tc in regular_calls if tc["id"] == tc_id), "?")
+                tc_input = next((tc.get("input", {}) for tc in regular_calls if tc["id"] == tc_id), {})
+                self._track_tool(tc_name)
+                self.console.print(f"  [green]●[/] {_tool_label(tc_name, tc_input)}")
+        elif len(regular_calls) == 1:
+            tc = regular_calls[0]
+            label = _tool_label(tc['name'], tc.get('input', {}))
+            with Status(f"  [yellow]●[/] {label}", console=self.console, spinner="dots"):
+                result = self._execute_tool(tc["name"], tc["input"])
+                if len(result) > 20000:
+                    result = result[:20000] + "\n... (truncated)"
+                results_list.append((tc["id"], result))
+            self._track_tool(tc['name'])
+            self.console.print(f"  [green]●[/] {label}")
+        for tc in mcp_calls:
+            label = _tool_label(tc["name"], tc.get("input", {}))
+            with Status(f"  [yellow]●[/] {label}", console=self.console, spinner="dots"):
+                result = self.mcp.call_tool(tc["name"], tc.get("input", {}))
+                if len(result) > 20000:
+                    result = result[:20000] + "\n... (truncated)"
+                results_list.append((tc["id"], result))
+            self.console.print(f"  [green]●[/] {label}")
+
+        if self.batch_edits and get_edit_queue():
+            set_batch_mode(False)
+            review_results = self._review_edit_queue()
+            for rr in review_results:
+                results_list.append(("review", rr))
+        set_batch_mode(False)
+        self._auto_commit_if_enabled()
+        lint_errors = self._run_lint_if_enabled()
+        if lint_errors:
+            results_list.append(("lint", lint_errors))
+        return results_list, lint_errors
+
+    def _append_tool_results(self, kind, results_list):
+        """Append a turn's tool results to history in the provider's native format."""
+        if kind == "claude":
+            tool_results = []
+            for tc_id, result in results_list:
+                if result.startswith("__IMAGE__:"):
+                    parts = result.split(":", 2)
+                    media_type = parts[1]
+                    b64_data = parts[2]
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": tc_id,
+                        "content": [{
+                            "type": "image",
+                            "source": {"type": "base64", "media_type": media_type, "data": b64_data},
+                        }],
+                    })
+                else:
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": tc_id,
+                        "content": result,
+                    })
+            self.history.append({"role": "user", "content": tool_results})
+        else:
+            for tc_id, result in results_list:
+                self.history.append({
+                    "role": "tool",
+                    "tool_call_id": tc_id,
+                    "content": result,
+                })
+
     # ── Ollama chat (text-based actions) ──
 
     def _chat_ollama(self, user_msg):
@@ -3687,22 +3761,7 @@ class Kodiqa:
             if _iteration > _max_iter:
                 self.console.print(f"[yellow]Reached max iterations ({_max_iter}). Stopping — raise max_iterations in /config if needed.[/]")
                 break
-            memories_ctx = self.memory.get_context()
-            context_file_ctx = self._load_context_file()
-            system_prompt = SYSTEM_PROMPT.format(cwd=self.cwd, model=self.model, memories=memories_ctx)
-            if self._persona and self._persona in PERSONAS:
-                system_prompt = PERSONAS[self._persona]["prompt"] + "\n\n" + system_prompt
-            if context_file_ctx:
-                system_prompt += "\n\n" + context_file_ctx
-            git_ctx = self._git_context()
-            if git_ctx:
-                system_prompt += "\n\n" + git_ctx
-            env_ctx = self._shell_env_context()
-            if env_ctx:
-                system_prompt += "\n\n" + env_ctx
-            pinned_ctx = self._build_pinned_context()
-            if pinned_ctx:
-                system_prompt += "\n\n" + pinned_ctx
+            system_prompt = self._build_system_prompt(SYSTEM_PROMPT)
             messages = [{"role": "system", "content": system_prompt}] + self.history
 
             assistant_text = self._stream_ollama(messages)
@@ -3747,187 +3806,14 @@ class Kodiqa:
             if lint_errors:
                 results.append(f"[Lint Errors]\n{lint_errors}")
             self.history.append({"role": "user", "content": f"[Action Results]\n" + "\n\n".join(results)})
-            # Auto lint-fix: if enabled, inject fix request and continue loop
-            if lint_errors and self.lint_auto_fix:
-                if not hasattr(self, '_lint_fix_count'):
-                    self._lint_fix_count = 0
-                self._lint_fix_count += 1
-                if self._lint_fix_count <= 3:
-                    self.console.print(f"  [cyan]●[/] Auto lint-fix iteration {self._lint_fix_count}/3...")
-                    self.history.append({"role": "user", "content": f"Fix these lint errors (attempt {self._lint_fix_count}/3):\n{lint_errors}"})
-                    continue
-                else:
-                    self.console.print(f"  [yellow]●[/] Lint auto-fix: max iterations reached, still has errors.")
-                    self._lint_fix_count = 0
+            if self._maybe_lint_fix(lint_errors):
+                continue
 
     # ── Claude chat (native tool_use API) ──
 
     def _chat_claude(self, user_msg):
-        # Embed @file references and images into the message
-        msg_text = self._append_files_to_text(user_msg, self._pending_files)
-        if self._pending_images:
-            content = [{"type": "text", "text": msg_text}]
-            for img in self._pending_images:
-                content.append({"type": "image", "source": {
-                    "type": "base64", "media_type": img["media_type"], "data": img["data"],
-                }})
-            self.history.append({"role": "user", "content": content})
-        else:
-            self.history.append({"role": "user", "content": msg_text})
-        self._pending_files = []
-        self._pending_images = []
-
-        _iteration = 0
-        _max_iter = self.config.get("max_iterations", 15)
-        while True:
-            _iteration += 1
-            if _iteration > _max_iter:
-                self.console.print(f"[yellow]Reached max iterations ({_max_iter}). Stopping — raise max_iterations in /config if needed.[/]")
-                break
-            memories_ctx = self.memory.get_context()
-            context_file_ctx = self._load_context_file()
-            system_prompt = CLAUDE_SYSTEM.format(cwd=self.cwd, model=self.model, memories=memories_ctx)
-            if self._persona and self._persona in PERSONAS:
-                system_prompt = PERSONAS[self._persona]["prompt"] + "\n\n" + system_prompt
-            if context_file_ctx:
-                system_prompt += "\n\n" + context_file_ctx
-            git_ctx = self._git_context()
-            if git_ctx:
-                system_prompt += "\n\n" + git_ctx
-            env_ctx = self._shell_env_context()
-            if env_ctx:
-                system_prompt += "\n\n" + env_ctx
-            pinned_ctx = self._build_pinned_context()
-            if pinned_ctx:
-                system_prompt += "\n\n" + pinned_ctx
-
-            # Build Claude messages (must alternate user/assistant)
-            messages = self._build_claude_messages()
-
-            response = self._call_claude_stream(system_prompt, messages)
-            if response is None:
-                return
-            if self._stream_interrupted:
-                text_content = response.get("text", "")
-                if text_content:
-                    self.history.append({"role": "assistant", "content": [{"type": "text", "text": text_content}]})
-                self._save_session()
-                return
-
-            text_content = response.get("text", "")
-            tool_calls = response.get("tool_calls", [])
-
-            # Build assistant message content blocks
-            assistant_content = []
-            if text_content:
-                assistant_content.append({"type": "text", "text": text_content})
-            for tc in tool_calls:
-                assistant_content.append({
-                    "type": "tool_use",
-                    "id": tc["id"],
-                    "name": tc["name"],
-                    "input": tc["input"],
-                })
-            self.history.append({"role": "assistant", "content": assistant_content})
-
-            if not tool_calls:
-                self._save_session()
-                return  # No tools = done
-
-            # Enable batch mode if active
-            if self.batch_edits:
-                set_batch_mode(True)
-
-            # Execute tools - parallel for read-only, sequential for writes
-            # Split MCP tools from regular tools
-            mcp_calls = [tc for tc in tool_calls if tc["name"].startswith("mcp_")]
-            regular_calls = [tc for tc in tool_calls if not tc["name"].startswith("mcp_")]
-            results_list = []
-            if len(regular_calls) > 1:
-                allowed_calls, results_list = self._partition_workspace(regular_calls)
-                if allowed_calls:
-                    with Status(f"  [yellow]●[/] Running {len(allowed_calls)} tools...", console=self.console, spinner="dots"):
-                        results_list = list(results_list) + execute_tools_parallel(allowed_calls, self.memory, self._confirm)
-                for tc_id, result in results_list:
-                    tc_name = next((tc["name"] for tc in regular_calls if tc["id"] == tc_id), "?")
-                    tc_input = next((tc.get("input", {}) for tc in regular_calls if tc["id"] == tc_id), {})
-                    self._track_tool(tc_name)
-                    self.console.print(f"  [green]●[/] {_tool_label(tc_name, tc_input)}")
-            elif len(regular_calls) == 1:
-                tc = regular_calls[0]
-                label = _tool_label(tc['name'], tc.get('input', {}))
-                with Status(f"  [yellow]●[/] {label}", console=self.console, spinner="dots"):
-                    result = self._execute_tool(tc["name"], tc["input"])
-                    if len(result) > 20000:
-                        result = result[:20000] + "\n... (truncated)"
-                    results_list.append((tc["id"], result))
-                self._track_tool(tc['name'])
-                self.console.print(f"  [green]●[/] {label}")
-            for tc in mcp_calls:
-                label = _tool_label(tc["name"], tc.get("input", {}))
-                with Status(f"  [yellow]●[/] {label}", console=self.console, spinner="dots"):
-                    result = self.mcp.call_tool(tc["name"], tc.get("input", {}))
-                    if len(result) > 20000:
-                        result = result[:20000] + "\n... (truncated)"
-                    results_list.append((tc["id"], result))
-                self.console.print(f"  [green]●[/] {label}")
-
-            # Review queued edits if any
-            if self.batch_edits and get_edit_queue():
-                set_batch_mode(False)
-                review_results = self._review_edit_queue()
-                # Add review results to tool results
-                for rr in review_results:
-                    results_list.append(("review", rr))
-            set_batch_mode(False)
-            self._auto_commit_if_enabled()
-            lint_errors = self._run_lint_if_enabled()
-            if lint_errors:
-                results_list.append(("lint", lint_errors))
-
-            # Build tool results - handle images specially for Claude vision
-            tool_results = []
-            for tc_id, result in results_list:
-                if result.startswith("__IMAGE__:"):
-                    # Parse image data for Claude vision
-                    parts = result.split(":", 2)
-                    media_type = parts[1]
-                    b64_data = parts[2]
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": tc_id,
-                        "content": [
-                            {
-                                "type": "image",
-                                "source": {
-                                    "type": "base64",
-                                    "media_type": media_type,
-                                    "data": b64_data,
-                                }
-                            }
-                        ],
-                    })
-                else:
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": tc_id,
-                        "content": result,
-                    })
-
-            self.history.append({"role": "user", "content": tool_results})
-            self._save_session()
-            # Auto lint-fix: if enabled, inject fix request and continue loop
-            if lint_errors and self.lint_auto_fix:
-                if not hasattr(self, '_lint_fix_count'):
-                    self._lint_fix_count = 0
-                self._lint_fix_count += 1
-                if self._lint_fix_count <= 3:
-                    self.console.print(f"  [cyan]●[/] Auto lint-fix iteration {self._lint_fix_count}/3...")
-                    self.history.append({"role": "user", "content": f"Fix these lint errors (attempt {self._lint_fix_count}/3):\n{lint_errors}"})
-                    continue
-                else:
-                    self.console.print(f"  [yellow]●[/] Lint auto-fix: max iterations reached, still has errors.")
-                    self._lint_fix_count = 0
+        """Claude native tool_use chat — see _run_native_chat for the shared loop."""
+        self._run_native_chat(user_msg, "claude")
 
     def _build_claude_messages(self):
         """Convert history to Claude API format. Handles content blocks properly."""
@@ -4236,146 +4122,8 @@ class Kodiqa:
         return None
 
     def _chat_openai_compat(self, user_msg, provider):
-        """Generic OpenAI-compatible chat loop (used by Qwen, OpenAI, DeepSeek, Groq, Mistral)."""
-        # Embed @file references and images into the message
-        msg_text = self._append_files_to_text(user_msg, self._pending_files)
-        if self._pending_images:
-            content = [{"type": "text", "text": msg_text}]
-            for img in self._pending_images:
-                content.append({"type": "image_url", "image_url": {
-                    "url": f"data:{img['media_type']};base64,{img['data']}",
-                }})
-            self.history.append({"role": "user", "content": content})
-        else:
-            self.history.append({"role": "user", "content": msg_text})
-        self._pending_files = []
-        self._pending_images = []
-
-        _iteration = 0
-        _max_iter = self.config.get("max_iterations", 15)
-        while True:
-            _iteration += 1
-            if _iteration > _max_iter:
-                self.console.print(f"[yellow]Reached max iterations ({_max_iter}). Stopping — raise max_iterations in /config if needed.[/]")
-                break
-            memories_ctx = self.memory.get_context()
-            context_file_ctx = self._load_context_file()
-            system_prompt = CLAUDE_SYSTEM.format(cwd=self.cwd, model=self.model, memories=memories_ctx)
-            if self._persona and self._persona in PERSONAS:
-                system_prompt = PERSONAS[self._persona]["prompt"] + "\n\n" + system_prompt
-            if context_file_ctx:
-                system_prompt += "\n\n" + context_file_ctx
-            git_ctx = self._git_context()
-            if git_ctx:
-                system_prompt += "\n\n" + git_ctx
-            env_ctx = self._shell_env_context()
-            if env_ctx:
-                system_prompt += "\n\n" + env_ctx
-            pinned_ctx = self._build_pinned_context()
-            if pinned_ctx:
-                system_prompt += "\n\n" + pinned_ctx
-
-            messages = self._build_openai_messages(system_prompt)
-
-            response = self._call_openai_compat_stream(messages, provider)
-            if response is None:
-                return
-            if self._stream_interrupted:
-                text_content = response.get("text", "")
-                if text_content:
-                    self.history.append({"role": "assistant", "content": text_content})
-                self._save_session()
-                return
-
-            text_content = response.get("text", "")
-            tool_calls = response.get("tool_calls", [])
-
-            # Build assistant message
-            assistant_msg = {"role": "assistant", "content": text_content or None}
-            if tool_calls:
-                assistant_msg["tool_calls"] = [
-                    {
-                        "id": tc["id"],
-                        "type": "function",
-                        "function": {"name": tc["name"], "arguments": json.dumps(tc["input"])},
-                    }
-                    for tc in tool_calls
-                ]
-            self.history.append(assistant_msg)
-
-            if not tool_calls:
-                self._save_session()
-                return
-
-            # Enable batch mode if active
-            if self.batch_edits:
-                set_batch_mode(True)
-
-            # Execute tools — split MCP from regular
-            mcp_calls = [tc for tc in tool_calls if tc["name"].startswith("mcp_")]
-            regular_calls = [tc for tc in tool_calls if not tc["name"].startswith("mcp_")]
-            results_list = []
-            if len(regular_calls) > 1:
-                allowed_calls, results_list = self._partition_workspace(regular_calls)
-                if allowed_calls:
-                    with Status(f"  [yellow]●[/] Running {len(allowed_calls)} tools...", console=self.console, spinner="dots"):
-                        results_list = list(results_list) + execute_tools_parallel(allowed_calls, self.memory, self._confirm)
-                for tc_id, result in results_list:
-                    tc_name = next((tc["name"] for tc in regular_calls if tc["id"] == tc_id), "?")
-                    tc_input = next((tc.get("input", {}) for tc in regular_calls if tc["id"] == tc_id), {})
-                    self._track_tool(tc_name)
-                    self.console.print(f"  [green]●[/] {_tool_label(tc_name, tc_input)}")
-            elif len(regular_calls) == 1:
-                tc = regular_calls[0]
-                label = _tool_label(tc["name"], tc.get("input", {}))
-                with Status(f"  [yellow]●[/] {label}", console=self.console, spinner="dots"):
-                    result = self._execute_tool(tc["name"], tc["input"])
-                    if len(result) > 20000:
-                        result = result[:20000] + "\n... (truncated)"
-                    results_list.append((tc["id"], result))
-                self._track_tool(tc["name"])
-                self.console.print(f"  [green]●[/] {label}")
-            for tc in mcp_calls:
-                label = _tool_label(tc["name"], tc.get("input", {}))
-                with Status(f"  [yellow]●[/] {label}", console=self.console, spinner="dots"):
-                    result = self.mcp.call_tool(tc["name"], tc.get("input", {}))
-                    if len(result) > 20000:
-                        result = result[:20000] + "\n... (truncated)"
-                    results_list.append((tc["id"], result))
-                self.console.print(f"  [green]●[/] {label}")
-
-            # Review queued edits if any
-            if self.batch_edits and get_edit_queue():
-                set_batch_mode(False)
-                review_results = self._review_edit_queue()
-                for rr in review_results:
-                    results_list.append(("review", rr))
-            set_batch_mode(False)
-            self._auto_commit_if_enabled()
-            lint_errors = self._run_lint_if_enabled()
-            if lint_errors:
-                results_list.append(("lint", lint_errors))
-
-            # Add tool results as separate messages (OpenAI format)
-            for tc_id, result in results_list:
-                self.history.append({
-                    "role": "tool",
-                    "tool_call_id": tc_id,
-                    "content": result,
-                })
-            self._save_session()
-            # Auto lint-fix: if enabled, inject fix request and continue loop
-            if lint_errors and self.lint_auto_fix:
-                if not hasattr(self, '_lint_fix_count'):
-                    self._lint_fix_count = 0
-                self._lint_fix_count += 1
-                if self._lint_fix_count <= 3:
-                    self.console.print(f"  [cyan]●[/] Auto lint-fix iteration {self._lint_fix_count}/3...")
-                    self.history.append({"role": "user", "content": f"Fix these lint errors (attempt {self._lint_fix_count}/3):\n{lint_errors}"})
-                    continue
-                else:
-                    self.console.print(f"  [yellow]●[/] Lint auto-fix: max iterations reached, still has errors.")
-                    self._lint_fix_count = 0
+        """OpenAI-compatible chat (OpenAI, DeepSeek, Groq, Mistral, Qwen) — shared loop."""
+        self._run_native_chat(user_msg, "openai", provider)
 
     def _build_openai_messages(self, system_prompt):
         """Convert history to OpenAI message format for OpenAI-compatible APIs."""

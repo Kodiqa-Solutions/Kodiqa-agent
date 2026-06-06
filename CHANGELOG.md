@@ -4,6 +4,17 @@ All notable changes to Kodiqa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.7.2] - 2026-06-06
+
+Internal refactor — no user-facing behavior change.
+
+### Changed
+- **Unified chat loop.** The two near-identical native tool-calling loops (Claude and all OpenAI-compatible providers, ~180 lines each, ~90% shared) are now one `_run_native_chat` driver; only the provider-specific *formats* differ (message build, assistant message, tool-result message), via small per-kind seams. Shared machinery (`_build_system_prompt`, `_run_tool_calls`, `_maybe_lint_fix`) is now defined once and also reused by the Ollama loop.
+- **Session persistence extracted.** Crash-recovery and the session archive moved from the `Kodiqa` God-class into a dedicated `SessionStore` (`session_store.py`); `Kodiqa` keeps thin wrappers, so behavior is unchanged. First step of splitting the God-class into focused units.
+
+### Tests
+- Added characterization tests for the chat-loop seams (`test_chat_loop.py`) and `SessionStore` round-trips (`test_session_store.py`). 350 total.
+
 ## [3.7.1] - 2026-06-06
 
 Internal refactor — no user-facing behavior change (only `/help` has a nicer grouped layout).

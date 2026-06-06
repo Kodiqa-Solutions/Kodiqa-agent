@@ -374,33 +374,35 @@ class TestDiffstat:
 
 
 class TestResumeFromHistory:
-    """--resume wiring: resume a saved history session by id (or latest)."""
+    """--resume wiring: SessionStore resumes a saved history session by id (or latest)."""
 
     def test_resume_latest(self, tmp_path, monkeypatch):
         import json
-        import kodiqa
-        monkeypatch.setattr(kodiqa, "KODIQA_DIR", str(tmp_path))
+        import session_store
+        from session_store import SessionStore
+        monkeypatch.setattr(session_store, "KODIQA_DIR", str(tmp_path))
         hist = tmp_path / "history"
         hist.mkdir()
         (hist / "index.json").write_text(json.dumps([{"id": 1}, {"id": 2}]))
         (hist / "session_2.json").write_text(json.dumps(
             {"model": "claude", "cwd": "/nonexistent_xyz",
              "history": [{"role": "user", "content": "hi"}]}))
-        k = MagicMock()
-        k.cwd = str(tmp_path)
-        kodiqa.Kodiqa._resume_from_history(k, None)  # None → most recent (id 2)
-        assert k.history == [{"role": "user", "content": "hi"}]
-        assert k.model == "claude"
+        agent = MagicMock()
+        agent.cwd = str(tmp_path)
+        SessionStore(agent).resume_from_history(None)  # None → most recent (id 2)
+        assert agent.history == [{"role": "user", "content": "hi"}]
+        assert agent.model == "claude"
 
     def test_resume_missing_id(self, tmp_path, monkeypatch):
         import json
-        import kodiqa
-        monkeypatch.setattr(kodiqa, "KODIQA_DIR", str(tmp_path))
+        import session_store
+        from session_store import SessionStore
+        monkeypatch.setattr(session_store, "KODIQA_DIR", str(tmp_path))
         hist = tmp_path / "history"
         hist.mkdir()
         (hist / "index.json").write_text(json.dumps([{"id": 1}]))
-        k = MagicMock()
-        k.cwd = str(tmp_path)
-        kodiqa.Kodiqa._resume_from_history(k, "999")
-        printed = " ".join(str(c) for c in k.console.print.call_args_list)
+        agent = MagicMock()
+        agent.cwd = str(tmp_path)
+        SessionStore(agent).resume_from_history("999")
+        printed = " ".join(str(c) for c in agent.console.print.call_args_list)
         assert "not found" in printed

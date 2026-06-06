@@ -276,6 +276,9 @@ PERSONAS = {
 # ── Changelog ──
 # Canonical changelog is CHANGELOG.md — this list powers the /changelog command
 CHANGELOG = [
+    {"version": "v3.7.2", "date": "2026-06-06", "changes": [
+        "Internal: unified the Claude + OpenAI-compatible chat loops into one driver; extracted session persistence into SessionStore. No behavior change.",
+    ]},
     {"version": "v3.7.1", "date": "2026-06-06", "changes": [
         "Internal: slash commands now use a registry — /help, autocomplete, and dispatch all derive from one source (no drift). No behavior change.",
     ]},

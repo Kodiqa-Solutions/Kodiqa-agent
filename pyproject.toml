@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kodiqa"
-version = "3.7.1"
+version = "3.7.2"
 description = "AI coding agent that runs anywhere — 7 providers, 26 tools, plugins, sub-agents, LSP, themes, RAG, 70 commands"
 readme = "README.md"
 license = {text = "AGPL-3.0-only"}
@@ -66,4 +66,4 @@ select = ["F", "E9"]
 ignore = ["F541"]  # f-string without placeholders — cosmetic, common in this UI code
 
 [tool.setuptools]
-py-modules = ["kodiqa", "actions", "tools", "config", "web", "memory", "mcp", "templates", "lsp", "embeddings", "repomap"]
+py-modules = ["kodiqa", "actions", "tools", "config", "web", "memory", "session_store", "mcp", "templates", "lsp", "embeddings", "repomap"]
