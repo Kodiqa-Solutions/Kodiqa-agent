@@ -7,16 +7,16 @@
 </p>
 
 <p align="center">
-  <em>69 slash commands &bull; 26 tools &bull; RAG search &bull; custom personas &bull; plugins &bull; sub-agents &bull; LSP &bull; 5 themes</em>
+  <em>70 slash commands &bull; 26 tools &bull; RAG search &bull; custom personas &bull; plugins &bull; sub-agents &bull; LSP &bull; 5 themes</em>
 </p>
 
 <p align="center">
   <a href="#install"><img src="https://img.shields.io/badge/python-3.9+-blue?logo=python&logoColor=white" alt="Python 3.9+"/></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-purple" alt="License"/></a>
   <a href="https://github.com/Kodiqa-Solutions/Kodiqa-agent/actions/workflows/ci.yml"><img src="https://github.com/Kodiqa-Solutions/Kodiqa-agent/actions/workflows/ci.yml/badge.svg" alt="CI"/></a>
-  <a href="#testing"><img src="https://img.shields.io/badge/tests-284%20passing-brightgreen" alt="Tests"/></a>
+  <a href="#testing"><img src="https://img.shields.io/badge/tests-317%20passing-brightgreen" alt="Tests"/></a>
   <a href="#api-setup"><img src="https://img.shields.io/badge/providers-7-cyan" alt="7 Providers"/></a>
-  <a href="#26-tools"><img src="https://img.shields.io/badge/commands-69-orange" alt="69 Commands"/></a>
+  <a href="#26-tools"><img src="https://img.shields.io/badge/commands-70-orange" alt="70 Commands"/></a>
 </p>
 
 <p align="center">
@@ -64,7 +64,7 @@
 | **Desktop app / IDE** | No | Yes (VS Code) | No | No | Yes (VS Code, desktop) |
 | **Install** | `pip install kodiqa` | `npm install -g` | `pip install` | `npm install -g` | `go install` / `npm` |
 | **Language** | Python | TypeScript | Python | TypeScript | Go |
-| **Tests** | 284 | Yes | Yes | Yes | Yes |
+| **Tests** | 317 | Yes | Yes | Yes | Yes |
 | **Open source** | Yes (AGPL-3.0) | Yes (Apache-2.0) | Yes (Apache-2.0) | Yes (Apache-2.0) | Yes (MIT) |
 
 **Kodiqa's unique advantages**: free local models, 7 API providers, multi-model consensus, custom plugins, sub-agents, LSP integration, 5 themes, project templates, batch edit review, conversation branching, budget limits, auto-lint, and auto model discovery — features no other agent offers together.
@@ -106,7 +106,7 @@ kodiqa
 - **Token tracking** — cost per response, session totals, tok/s speed
 - **Prompt caching** — Claude API cache for faster + cheaper responses
 - **Auto-retry** — exponential backoff on API errors (429, 5xx, timeouts)
-- **Undo** — per-file undo buffer (up to 10 levels)
+- **Undo / redo** — per-file undo buffer (up to 10 levels) with `/redo` to re-apply
 - **Checkpoints** — save/restore conversation state
 - **Session export** — export conversation to markdown
 - **Git-aware context** — auto-detects git repo, includes diff stats
@@ -115,7 +115,7 @@ kodiqa
 - **Diff preview** — colored diff before every file write/edit
 - **Parallel tools** — read-only operations run concurrently
 - **Session summary** — auto-saves context summary on quit, loaded on next start
-- **Conversation recovery** — auto-saved sessions, resume on crash
+- **Conversation recovery** — auto-saved sessions, resume on crash or with `kodiqa -c` / `--resume`
 - **Workspace boundary** — asks permission before accessing files outside working directory
 - **Smart Ollama lifecycle** — starts on launch, stops when switching to cloud, restarts on local switch
 - **Dynamic model library** — fetches available Ollama models from ollama.com with pull counts
@@ -138,7 +138,7 @@ kodiqa
 - **Clipboard patches** — `/patch` applies diffs from clipboard
 - **Changelog** — `/changelog` shows version history
 - **Session stats** — `/stats` shows metrics (files, tools, time, cost)
-- **300 tests** — pytest test suite, all passing
+- **317 tests** — pytest test suite, all passing
 
 ## Arrow-Key UI
 
@@ -191,6 +191,7 @@ Prompt uses a separator line (like Claude Code):
 | `/autocommit` | Toggle auto git commit after AI edits |
 | `/budget <amount>` | Set session budget limit (warns 80%, blocks 100%) |
 | `/undo [path]` | Undo last edit / list undo history |
+| `/redo [path]` | Re-apply an undone edit / list redo history |
 | `/diff [args]` | Show git diff (supports --staged etc.) |
 | `/lint <cmd>` | Auto-lint after edits (`/lint off` to disable) |
 | `/pin <path>` | Pin file to always include in context |
@@ -486,7 +487,7 @@ find any bugs in this code
   embeddings.py      # RAG vector store (93 lines)
   repomap.py         # Tree-sitter/regex repo map (157 lines)
   bin/kodiqa         # Global install script
-  tests/             # 300 tests (pytest)
+  tests/             # 317 tests (pytest)
   pyproject.toml     # Package config (pip install .)
   requirements.txt   # Dependencies
 
@@ -530,7 +531,7 @@ find any bugs in this code
 ## Testing
 
 ```bash
-pytest -v          # 300 tests, all passing
+pytest -v          # 317 tests, all passing
 ```
 
 ## Requirements

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kodiqa"
-version = "3.6.0"
-description = "AI coding agent that runs anywhere — 7 providers, 26 tools, plugins, sub-agents, LSP, themes, RAG, 69 commands"
+version = "3.7.0"
+description = "AI coding agent that runs anywhere — 7 providers, 26 tools, plugins, sub-agents, LSP, themes, RAG, 70 commands"
 readme = "README.md"
 license = {text = "AGPL-3.0-only"}
 requires-python = ">=3.9"

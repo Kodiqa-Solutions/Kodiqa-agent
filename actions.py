@@ -23,6 +23,19 @@ _logger = logging.getLogger("kodiqa")
 
 # Per-file undo stack: {filepath: deque([(old_content), ...], maxlen=N)}
 _undo_buffer = defaultdict(lambda: deque(maxlen=10))
+# Per-file redo stack — populated by do_undo_edit, cleared by any fresh edit.
+_redo_buffer = defaultdict(lambda: deque(maxlen=10))
+
+
+def _push_undo(abs_path, content):
+    """Record a pre-edit snapshot for undo and invalidate the redo stack.
+
+    A fresh edit always discards any pending redo (standard undo/redo semantics),
+    so /redo only ever replays edits that were just undone, never a stale branch.
+    """
+    _undo_buffer[abs_path].append(content)
+    if abs_path in _redo_buffer:
+        _redo_buffer[abs_path].clear()
 
 # ── Hooks ──
 _hooks = {}
@@ -85,6 +98,27 @@ def _shell_quote(s):
 _edit_queue = []  # list of {"path": ..., "old": ..., "new": ..., "type": "write"|"edit"|...}
 _batch_mode = False
 
+# Per-turn change log for the end-of-turn diffstat: {abs_path: [orig_content, latest_content]}.
+# Captures every applied write/edit (any permission mode), collapsing repeated edits to
+# one file into a single (first-old → last-new) delta. Kodiqa reads + clears it per turn.
+_change_log = {}
+
+
+def _record_change(abs_path, old, new):
+    """Record an applied file change for the end-of-turn diffstat."""
+    if abs_path in _change_log:
+        _change_log[abs_path][1] = new  # keep the original old, update to the latest new
+    else:
+        _change_log[abs_path] = [old or "", new or ""]
+
+
+def get_change_log():
+    return dict(_change_log)
+
+
+def clear_change_log():
+    _change_log.clear()
+
 
 def set_batch_mode(enabled):
     global _batch_mode
@@ -109,11 +143,12 @@ def apply_queued_edit(index):
         return "Error: empty file path — skipped"
     # Save to undo buffer
     old = entry.get("old_content", "")
-    _undo_buffer[os.path.abspath(path)].append(old if old else None)
+    _push_undo(os.path.abspath(path), old if old else None)
     # Write the new content
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "w") as f:
         f.write(entry["new_content"])
+    _record_change(os.path.abspath(path), old, entry["new_content"])
     return f"Applied: {path}"
 
 
@@ -439,7 +474,7 @@ def do_write_file(path, content):
         })
         return f"[queued] Write to {path} ({len(content)} chars)"
     # Save to undo buffer before writing
-    _undo_buffer[os.path.abspath(path)].append(old_content if old_content else None)
+    _push_undo(os.path.abspath(path), old_content if old_content else None)
     if old_content:
         _show_diff(path, old_content, content)
     else:
@@ -448,6 +483,7 @@ def do_write_file(path, content):
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "w") as f:
         f.write(content)
+    _record_change(os.path.abspath(path), old_content, content)
     return f"Written {len(content)} chars to {path}"
 
 
@@ -483,20 +519,28 @@ def do_edit_file(path, old_text, new_text):
         })
         return f"[queued] Edit {path}"
     # Save to undo buffer before editing
-    _undo_buffer[os.path.abspath(path)].append(content)
+    _push_undo(os.path.abspath(path), content)
     _show_diff(path, content, new_content)
     with open(path, "w") as f:
         f.write(new_content)
+    _record_change(os.path.abspath(path), content, new_content)
     return f"Replaced in {path} ({count} occurrence{'s' if count > 1 else ''} found, replaced first)"
 
 
 def do_undo_edit(path):
-    """Restore the previous version of a file."""
+    """Restore the previous version of a file (and push the current state for redo)."""
     path = os.path.expanduser(path)
     abs_path = os.path.abspath(path)
     if abs_path not in _undo_buffer or not _undo_buffer[abs_path]:
         return f"No undo history for {path}"
     previous = _undo_buffer[abs_path].pop()
+    # Capture the current state so /redo can replay this change. None means the
+    # file doesn't exist (so redo of an undone deletion will re-delete).
+    current = None
+    if os.path.isfile(path):
+        with open(path, "r", errors="replace") as f:
+            current = f.read()
+    _redo_buffer[abs_path].append(current)
     if previous is None:
         # File was newly created — undo means delete it
         try:
@@ -504,16 +548,45 @@ def do_undo_edit(path):
             return f"Undone: removed newly created file {path}"
         except Exception as e:
             return f"Undo error: {e}"
-    # Show diff and restore
-    current = ""
-    if os.path.isfile(path):
-        with open(path, "r", errors="replace") as f:
-            current = f.read()
-    _show_diff(path, current, previous)
+    _show_diff(path, current or "", previous)
     with open(path, "w") as f:
         f.write(previous)
     remaining = len(_undo_buffer[abs_path])
     return f"Undone edit to {path} (restored previous version, {remaining} more undo(s) available)"
+
+
+def do_redo_edit(path):
+    """Re-apply the most recently undone change to a file."""
+    path = os.path.expanduser(path)
+    abs_path = os.path.abspath(path)
+    if abs_path not in _redo_buffer or not _redo_buffer[abs_path]:
+        return f"No redo history for {path}"
+    redo_content = _redo_buffer[abs_path].pop()
+    # Capture the current state back onto the undo stack so /undo still works.
+    current = None
+    if os.path.isfile(path):
+        with open(path, "r", errors="replace") as f:
+            current = f.read()
+    _undo_buffer[abs_path].append(current)
+    if redo_content is None:
+        # The redone change had removed the file — remove it again.
+        try:
+            if os.path.isfile(path):
+                os.remove(path)
+            return f"Redone: removed {path}"
+        except Exception as e:
+            return f"Redo error: {e}"
+    _show_diff(path, current or "", redo_content)
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w") as f:
+        f.write(redo_content)
+    remaining = len(_redo_buffer[abs_path])
+    return f"Redone edit to {path} ({remaining} more redo(s) available)"
+
+
+def redo_paths():
+    """Return paths that currently have redo history (for the /redo picker)."""
+    return [(p, len(buf)) for p, buf in _redo_buffer.items() if buf]
 
 
 def do_edit_file_all(path, old_text, new_text):
@@ -535,10 +608,11 @@ def do_edit_file_all(path, old_text, new_text):
             "description": f"Replace all ({count}x) in {path}",
         })
         return f"[queued] Replace all in {path}"
-    _undo_buffer[os.path.abspath(path)].append(content)
+    _push_undo(os.path.abspath(path), content)
     _show_diff(path, content, new_content)
     with open(path, "w") as f:
         f.write(new_content)
+    _record_change(os.path.abspath(path), content, new_content)
     return f"Replaced {count} occurrence(s) in {path}"
 
 
@@ -988,10 +1062,11 @@ def do_multi_edit(path, edits):
     if applied == 0:
         return f"No edits matched in {path}"
     # Push to undo buffer only once we know we'll actually change the file.
-    _undo_buffer[os.path.abspath(path)].append(content)
+    _push_undo(os.path.abspath(path), content)
     _show_diff(path, content, new_content)
     with open(path, "w") as f:
         f.write(new_content)
+    _record_change(os.path.abspath(path), content, new_content)
     return f"Applied {applied}/{len(edits)} edits to {path}"
 
 
@@ -1030,7 +1105,7 @@ def do_diff_apply(path, patch):
         return f"File not found: {path}"
     with open(path, "r") as f:
         content = f.read()
-    _undo_buffer[os.path.abspath(path)].append(content)
+    _push_undo(os.path.abspath(path), content)
     # Apply via the system `patch` command.
     try:
         proc = subprocess.run(
@@ -1041,6 +1116,7 @@ def do_diff_apply(path, patch):
             with open(path, "r") as f:
                 new_content = f.read()
             _show_diff(path, content, new_content)
+            _record_change(os.path.abspath(path), content, new_content)
             return f"Patch applied to {path}"
         return f"Patch failed: {proc.stderr}"
     except FileNotFoundError:

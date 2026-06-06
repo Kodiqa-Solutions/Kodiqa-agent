@@ -276,6 +276,15 @@ PERSONAS = {
 # ── Changelog ──
 # Canonical changelog is CHANGELOG.md — this list powers the /changelog command
 CHANGELOG = [
+    {"version": "v3.7.0", "date": "2026-06-06", "changes": [
+        "kodiqa -c / --continue — resume the most recent session without prompting",
+        "--resume [ID] — resume a saved history session (most recent if no id)",
+        "/redo — re-apply an undone edit (redo stack alongside /undo)",
+        "Live cost/token ticker during streaming (in the code/thinking status line)",
+        "End-of-turn diffstat — 'N files changed, +x −y' rollup after each turn",
+        "First-run setup now offers all 7 providers (was Claude-only)",
+        "Friendlier connection/timeout errors with next-step hints",
+    ]},
     {"version": "v3.2.0", "date": "2026-03-02", "changes": [
         "Auto lint-fix loop (/lint auto) — AI fixes lint errors automatically (max 3 iterations)",
         "Auto test-fix loop (/test-fix) — run tests, AI fixes failures, re-run",

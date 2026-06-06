@@ -4,6 +4,24 @@ All notable changes to Kodiqa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.7.0] - 2026-06-06
+
+Quick-win batch — session resume, redo, live cost ticker, diffstat, and a friendlier first run.
+
+### Added
+- **`kodiqa -c` / `--continue`** — resume the most recent session immediately, skipping the y/n prompt.
+- **`--resume [ID]`** — resume a specific saved history session by id (most recent when no id is given), mirroring `/history resume`.
+- **`/redo`** — re-apply the most recently undone edit. A per-file redo stack sits alongside `/undo`; any fresh edit invalidates the redo stack (standard undo/redo semantics).
+- **Live cost/token ticker** — while a response streams, the code/thinking status line now shows an estimated `~N tok ~$X` (output cost reconciled from real usage at end of turn). Hidden for local/free models.
+- **End-of-turn diffstat** — after each turn, a `✎ N files changed, +x −y` rollup (per-file breakdown when more than one file changed), tracked across all permission modes.
+- **First-run provider picker** — first launch now offers all 7 providers (Claude + OpenAI/DeepSeek/Groq/Mistral/Qwen + local-only) via the arrow-key selector, instead of hardcoding Claude. Sets the chosen provider's default model.
+
+### Changed
+- **Friendlier API errors** — connection failures and timeouts now print an actionable hint (check connection / `/model` to switch) instead of a raw exception; the Ollama connection error suggests `ollama serve`.
+
+### Tests
+- Added regressions for redo (round-trip, redo-clears-on-fresh-edit, new-file re-delete), the change-log/diffstat rollup, the live ticker, and `--resume` history loading (317 total).
+
 ## [3.6.0] - 2026-06-06
 
 Medium-tier audit fixes (cross-platform, correctness, stability, security).

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Kodiqa - Local AI coding agent. Claude native tools + Ollama text-based actions."""
 
+import difflib
 import json
 import os
 import sys
@@ -39,7 +40,8 @@ from memory import MemoryStore
 from actions import (
     parse_actions, execute_action, execute_tool_call, execute_tools_parallel, set_console,
     set_batch_mode, get_edit_queue, clear_edit_queue, apply_queued_edit, reject_queued_edit,
-    do_undo_edit, _undo_buffer, set_hooks,
+    do_undo_edit, do_redo_edit, redo_paths, _undo_buffer, set_hooks,
+    get_change_log, clear_change_log,
 )
 from web import set_search_engine, get_search_engine, set_google_api_keys, get_google_api_keys
 from tools import CLAUDE_TOOLS
@@ -203,7 +205,7 @@ class StreamStallIndicator:
 class StreamWriter:
     """Filters streaming output: shows text, hides code blocks in compact mode."""
 
-    def __init__(self, console, compact=True):
+    def __init__(self, console, compact=True, out_rate=0.0):
         self.console = console
         self.compact = compact
         self._buffer = []
@@ -217,9 +219,22 @@ class StreamWriter:
         self._action_depth = 0  # track [ACTION:...] blocks
         self._in_think = False  # track <think>...</think> blocks
         self._think_lines = 0
+        self._out_rate = out_rate  # output $ per token (0 = free/unknown → ticker hidden)
+        self._out_chars = 0        # streamed output chars, for the live token/cost ticker
+
+    def _ticker(self):
+        """A short ' · ~N tok ~$X' suffix estimating output so far, shown in status lines.
+
+        Estimates ~4 chars/token (the real cost is reconciled from API usage when the
+        turn ends). Returns '' for local/free models so it stays out of the way."""
+        toks = self._out_chars / 4
+        if self._out_rate <= 0:
+            return f" · ~{toks:,.0f} tok" if toks else ""
+        return f" · ~{toks:,.0f} tok ~${toks * self._out_rate:.4f}"
 
     def write(self, token):
         """Process a token. Returns the token (always appended to full_text externally)."""
+        self._out_chars += len(token)
         if not self.compact:
             sys.stdout.write(token)
             sys.stdout.flush()
@@ -261,7 +276,7 @@ class StreamWriter:
         if self._in_think:
             self._think_lines += 1
             if self._status:
-                self._status.update(f"  [dim]Thinking... ({self._think_lines} lines)[/]")
+                self._status.update(f"  [dim]Thinking... ({self._think_lines} lines){self._ticker()}[/]")
             return
 
         # Track [ACTION:...] blocks (Ollama text mode)
@@ -282,7 +297,7 @@ class StreamWriter:
             # Inside an action block — suppress all output, just count
             self._fence_lines += 1
             if self._status:
-                self._status.update(f"  [dim]Action in progress... ({self._fence_lines} lines)[/]")
+                self._status.update(f"  [dim]Action in progress... ({self._fence_lines} lines){self._ticker()}[/]")
             return
 
         # Check for code fence toggle
@@ -315,7 +330,7 @@ class StreamWriter:
                 lang_label = f" ({self._fence_lang})" if self._fence_lang else ""
                 self._status.update(
                     f"  [dim]Writing code{lang_label}... "
-                    f"{self._fence_lines} lines, {self._fence_chars:,} chars[/]"
+                    f"{self._fence_lines} lines, {self._fence_chars:,} chars{self._ticker()}[/]"
                 )
         else:
             # Regular text — show it
@@ -461,7 +476,7 @@ class KodiqaCompleter(Completer):
                             if sub.startswith(word):
                                 yield Completion(sub, start_position=-len(word))
                         yield from self._complete_path(word)
-                    elif cmd in ("/cd", "/scan", "/pin", "/unpin", "/test", "/debug"):
+                    elif cmd in ("/cd", "/scan", "/pin", "/unpin", "/test", "/debug", "/undo", "/redo"):
                         yield from self._complete_path(word)
                     elif cmd in ("/restore",):
                         for n in self.agent._checkpoints.keys():
@@ -500,6 +515,8 @@ class Kodiqa:
         for prov_name, prov in OPENAI_COMPAT_PROVIDERS.items():
             self.api_keys[prov_name] = self.settings.get(prov["key_setting"], "")
         self.session_file = os.path.join(KODIQA_DIR, "session.json")
+        self._auto_resume = False   # -c / --continue: resume last session without prompting
+        self._resume_id = None      # --resume <id>: resume a specific history session
         self.multi_models = []  # default: single model mode
         self._auto_approved = set()  # action types auto-approved this session
         self.session_tokens = {"input": 0, "output": 0, "cache_read": 0, "cache_creation": 0, "cost": 0.0}
@@ -621,7 +638,7 @@ class Kodiqa:
         "/memories", "/forget", "/context", "/key", "/tokens", "/config",
         "/export", "/checkpoint", "/restore", "/env", "/verbose", "/mode",
         "/plan", "/accept", "/search", "/cd", "/branch", "/mcp",
-        "/autocommit", "/budget", "/undo", "/diff", "/lint",
+        "/autocommit", "/budget", "/undo", "/redo", "/diff", "/lint",
         "/pin", "/unpin", "/alias", "/unalias", "/notify", "/optimizer", "/theme",
         "/share", "/pr", "/review", "/issue", "/init", "/plugins",
         "/agent", "/agents", "/lsp", "/voice",
@@ -887,7 +904,10 @@ class Kodiqa:
     def run(self):
         self._first_run_setup()
         self._detect_git()
-        self._load_session()
+        if self._resume_id is not None:
+            self._resume_from_history(self._resume_id or None)
+        else:
+            self._load_session()
         self._welcome_shown = False
         self._check_updates()
         if not self._welcome_shown:
@@ -941,29 +961,46 @@ class Kodiqa:
             return
         self.console.print(Panel(
             "[bold]Welcome to Kodiqa![/]\n\n"
-            "Kodiqa works with [cyan]local Ollama models[/] (free, unlimited).\n"
-            "You can also connect [bold yellow]Claude API[/] for much smarter responses.\n\n"
-            "[dim]Claude API costs money per message but is far more capable.\n"
-            "Get your key at: https://console.anthropic.com/settings/keys[/]",
+            "Kodiqa works with [cyan]local Ollama models[/] (free, unlimited) "
+            "or any of [bold]6 cloud providers[/] for more capable responses.\n\n"
+            "[dim]Cloud APIs cost money per message but are far more capable.\n"
+            "Pick one to set up now, or start local — you can add/change keys "
+            "anytime with [/][bold]/key[/][dim].[/]",
             title="First Run Setup", border_style="green",
         ))
+        # Build the provider menu from the registry (Claude + every OpenAI-compat
+        # provider), with "local only" last so Enter/Ctrl+C defaults to free local use.
+        options = [("Claude API", "Anthropic — sonnet, opus, haiku (sk-ant-…)")]
+        providers = ["claude"]
+        for pn, pv in OPENAI_COMPAT_PROVIDERS.items():
+            aliases = ", ".join(list(pv["aliases"].keys())[:3])
+            options.append((f"{pv['label']} API", aliases))
+            providers.append(pn)
+        options.append(("Local models only (Ollama)", "free, no API key needed"))
+        providers.append(None)
+        local_idx = len(providers) - 1
         try:
-            choice = Prompt.ask("Add Claude API key?", choices=["y", "n"], default="n")
-            if choice.lower() == "y":
-                key = Prompt.ask("[bold yellow]Paste your Claude API key[/]")
-                key = key.strip()
-                if key.startswith("sk-ant-"):
-                    self.claude_key = key
-                    self.settings["claude_api_key"] = key
-                    self.settings["default_model"] = "claude-sonnet-4-20250514"
-                    self.model = "claude-sonnet-4-20250514"
-                    self.console.print("[green]Claude API key saved! Using Claude Sonnet as default.[/]")
-                else:
-                    self.console.print("[yellow]Key doesn't look right (should start with sk-ant-). Skipping.[/]")
-            else:
-                self.console.print(f"[dim]Using local models. Default: {self.model}[/]")
+            idx = self._arrow_select(options, self.console, default=local_idx)
         except (EOFError, KeyboardInterrupt):
-            self.console.print(f"\n[dim]Skipped. Using local models.[/]")
+            idx = local_idx
+        chosen = providers[idx]
+        if chosen is None:
+            self.console.print(f"[dim]Using local models. Default: {self.model}[/]")
+        elif chosen == "claude":
+            self._setup_claude_key()
+            if self.claude_key:
+                target = CLAUDE_ALIASES.get("sonnet", "claude-sonnet-4-6")
+                self.settings["default_model"] = target
+                self.model = target
+                self.console.print(f"[green]Default model set to {target}.[/]")
+        else:
+            self._setup_provider_key(chosen)
+            if self.api_keys.get(chosen):
+                prov = OPENAI_COMPAT_PROVIDERS[chosen]
+                target = list(prov["aliases"].values())[0]
+                self.settings["default_model"] = target
+                self.model = target
+                self.console.print(f"[green]Default model set to {target}.[/]")
         self.settings["setup_done"] = True
         save_settings(self.settings)
         self.console.print()
@@ -1067,16 +1104,25 @@ class Kodiqa:
                 os.remove(self.session_file)
                 return
             msg_count = len([m for m in history if m.get("role") == "user"])
+
+            def _restore(d, h):
+                self.history = h
+                self.model = d.get("model", self.model)
+                saved_cwd = d.get("cwd", self.cwd)
+                if os.path.isdir(saved_cwd):
+                    self.cwd = saved_cwd
+                    os.chdir(self.cwd)
+
+            # -c / --continue: skip the prompt and resume straight away.
+            if self._auto_resume:
+                _restore(data, history)
+                self.console.print(f"[green]Resumed previous session ({msg_count} messages).[/]")
+                return
             self.console.print(f"[dim]Previous session found ({msg_count} messages). Resume? (y/n)[/]")
             try:
                 answer = Prompt.ask("Resume", choices=["y", "n"], default="y")
                 if answer.lower() == "y":
-                    self.history = history
-                    self.model = data.get("model", self.model)
-                    saved_cwd = data.get("cwd", self.cwd)
-                    if os.path.isdir(saved_cwd):
-                        self.cwd = saved_cwd
-                        os.chdir(self.cwd)
+                    _restore(data, history)
                     self.console.print("[green]Session restored.[/]")
                 else:
                     os.remove(self.session_file)
@@ -1084,6 +1130,44 @@ class Kodiqa:
                 os.remove(self.session_file)
         except Exception:
             pass
+
+    def _resume_from_history(self, session_id):
+        """Resume a saved history session by id (or the most recent when id is None).
+
+        Used by the `--resume [ID]` CLI flag; mirrors the `/history resume` path.
+        """
+        history_dir = os.path.join(KODIQA_DIR, "history")
+        index_file = os.path.join(history_dir, "index.json")
+        if not os.path.isfile(index_file):
+            self.console.print("[dim]No session history to resume.[/]")
+            return
+        try:
+            with open(index_file, "r") as f:
+                index = json.load(f)
+        except Exception:
+            index = []
+        if not index:
+            self.console.print("[dim]No session history to resume.[/]")
+            return
+        if not session_id:  # most recent
+            session_id = str(index[-1].get("id", ""))
+        session_file = os.path.join(history_dir, f"session_{session_id}.json")
+        if not os.path.isfile(session_file):
+            self.console.print(f"[red]Session {session_id} not found.[/] Use [bold]/history[/] to list them.")
+            return
+        try:
+            with open(session_file, "r") as f:
+                data = json.load(f)
+        except Exception:
+            self.console.print(f"[red]Could not read session {session_id}.[/]")
+            return
+        self.history = data.get("history", [])
+        self.model = data.get("model", self.model)
+        saved_cwd = data.get("cwd", self.cwd)
+        if os.path.isdir(saved_cwd):
+            self.cwd = saved_cwd
+            os.chdir(self.cwd)
+        self.console.print(f"[green]Resumed session {session_id} ({len(self.history)} messages).[/]")
 
     def _clear_session(self):
         """Remove saved session file."""
@@ -1620,6 +1704,8 @@ class Kodiqa:
                 "[bold]/rag[/] <query>    - RAG search + AI answer\n"
                 "[bold]/debug[/] <script> - Run and debug script\n"
                 "[bold]/diagram[/] <desc> - Generate Mermaid diagram\n"
+                "[bold]/undo[/] [path]    - Undo last file edit\n"
+                "[bold]/redo[/] [path]    - Re-apply an undone edit\n"
                 "[bold]/quit[/]          - Exit",
                 title="Commands", border_style="blue",
             ))
@@ -2049,6 +2135,21 @@ class Kodiqa:
                     self.console.print("[dim]Usage: /undo <path>[/]")
                 else:
                     self.console.print("[dim]No undo history yet.[/]")
+        elif command == "/redo":
+            if arg:
+                path = os.path.abspath(os.path.expanduser(arg))
+                result = do_redo_edit(path)
+                self.console.print(result)
+            else:
+                files_with_redo = redo_paths()
+                if files_with_redo:
+                    self.console.print("[bold]Files with redo history:[/]")
+                    for p, count in files_with_redo:
+                        rel = os.path.relpath(p, self.cwd) if p.startswith(self.cwd) else p
+                        self.console.print(f"  [cyan]{rel}[/] [dim]({count} redo steps)[/]")
+                    self.console.print("[dim]Usage: /redo <path>[/]")
+                else:
+                    self.console.print("[dim]Nothing to redo. Use /undo first.[/]")
         elif command == "/diff":
             try:
                 cmd = ["git", "diff"] + (arg.split() if arg else [])
@@ -3028,6 +3129,7 @@ class Kodiqa:
             return
         self._check_cost_optimizer(user_msg)
         self._chat_start_time = time.time()
+        clear_change_log()  # track this turn's file edits for the end-of-turn diffstat
         if self.multi_models:
             self._chat_multi(user_msg)
         elif is_claude_model(self.model) or self._is_live_claude(self.model):
@@ -3038,6 +3140,46 @@ class Kodiqa:
                 self._chat_openai_compat(user_msg, provider)
             else:
                 self._chat_ollama(user_msg)
+        self._show_diffstat()
+
+    def _show_diffstat(self):
+        """Print an end-of-turn rollup: N files changed, +added / -removed lines."""
+        changes = get_change_log()
+        if not changes:
+            return
+        total_add = total_del = 0
+        rows = []
+        for path, (old, new) in changes.items():
+            add = dele = 0
+            for line in difflib.unified_diff(old.splitlines(), new.splitlines(), lineterm=""):
+                if line.startswith("+") and not line.startswith("+++"):
+                    add += 1
+                elif line.startswith("-") and not line.startswith("---"):
+                    dele += 1
+            if add == 0 and dele == 0:
+                continue
+            total_add += add
+            total_del += dele
+            rel = os.path.relpath(path, self.cwd) if path.startswith(self.cwd) else path
+            rows.append((rel, add, dele))
+        if not rows:
+            return
+        n = len(rows)
+        self.console.print(
+            f"  [dim]✎ {n} file{'s' if n != 1 else ''} changed,[/] "
+            f"[green]+{total_add}[/] [red]-{total_del}[/]"
+        )
+        if n > 1:
+            for rel, add, dele in rows:
+                self.console.print(f"      [dim]{rel}[/] [green]+{add}[/] [red]-{dele}[/]")
+
+    def _api_error_hint(self, e):
+        """A short, actionable hint for a network-layer API exception."""
+        if isinstance(e, requests.ConnectionError):
+            return "Connection failed — check your internet connection, or /model to switch providers."
+        if isinstance(e, requests.Timeout):
+            return "Request timed out — the provider may be slow. Try again, or /model to switch."
+        return "Try /model to switch providers."
 
     def _is_live_claude(self, model_name):
         """Check if model is in cached live Claude model list."""
@@ -3756,7 +3898,7 @@ class Kodiqa:
             if _logger:
                 _logger.error(f"Claude API failed: {e}")
             self.console.print(f"[red]Claude error: {e}[/]")
-            self.console.print("[yellow]Try /model to switch providers.[/]")
+            self.console.print(f"[yellow]{self._api_error_hint(e)}[/]")
             return None
 
         # Parse streaming response
@@ -3770,7 +3912,7 @@ class Kodiqa:
         stop_reason = "end_turn"
         stream_usage = {}
         first_token = True
-        writer = StreamWriter(self.console, compact=self.compact_mode)
+        writer = StreamWriter(self.console, compact=self.compact_mode, out_rate=self._output_rate())
         stall = StreamStallIndicator(self.console)
         thinking_status = Status("  [dim]Thinking...[/]", console=self.console, spinner="dots")
         thinking_status.start()
@@ -4274,6 +4416,7 @@ class Kodiqa:
             if _logger:
                 _logger.error(f"{prov['label']} API failed: {e}")
             self.console.print(f"[red]{prov['label']} error: {e}[/]")
+            self.console.print(f"[yellow]{self._api_error_hint(e)}[/]")
             return None
 
         # Parse SSE streaming response (OpenAI format)
@@ -4284,7 +4427,7 @@ class Kodiqa:
         tool_calls = {}  # index -> {id, name, arguments}
         stream_usage = {}
         first_token = True
-        writer = StreamWriter(self.console, compact=self.compact_mode)
+        writer = StreamWriter(self.console, compact=self.compact_mode, out_rate=self._output_rate())
         stall = StreamStallIndicator(self.console)
         thinking_status = Status("  [dim]Thinking...[/]", console=self.console, spinner="dots")
         thinking_status.start()
@@ -4503,10 +4646,10 @@ class Kodiqa:
             )
             resp.raise_for_status()
         except requests.ConnectionError:
-            self.console.print("[red]Can't connect to Ollama. Is it running?[/]")
+            self.console.print("[red]Can't connect to Ollama.[/] Start it with [bold]ollama serve[/] (Kodiqa normally auto-starts it).")
             has_any_key = self.claude_key or any(self.api_keys.get(p, "") for p in OPENAI_COMPAT_PROVIDERS)
             if has_any_key:
-                self.console.print("[yellow]Try /model to switch to a cloud provider.[/]")
+                self.console.print("[yellow]Or use /model to switch to a cloud provider.[/]")
             return None
         except Exception as e:
             if _logger:
@@ -4519,7 +4662,7 @@ class Kodiqa:
         full_text = []
         first_token = True
         token_count = 0
-        writer = StreamWriter(self.console, compact=self.compact_mode)
+        writer = StreamWriter(self.console, compact=self.compact_mode, out_rate=self._output_rate())
         stall = StreamStallIndicator(self.console)
         thinking_status = Status("  [dim]Thinking...[/]", console=self.console, spinner="dots")
         thinking_status.start()
@@ -4568,6 +4711,10 @@ class Kodiqa:
         return "".join(full_text)
 
     # ── Shared ──
+
+    def _output_rate(self):
+        """Output $ per token for the current model (0 if unpriced/local) — for the live ticker."""
+        return COST_TABLE.get(self.model, (0, 0))[1] / 1_000_000
 
     def _display_token_usage(self, usage, model=None, elapsed=None):
         """Show token usage, cost, and response metrics after a response."""
@@ -5977,11 +6124,19 @@ def main():
     parser.add_argument("--model", type=str, metavar="MODEL", help="Model to use")
     parser.add_argument("--output", type=str, metavar="FILE", help="Output file for headless mode")
     parser.add_argument("--no-update", action="store_true", help="Skip the startup model update/discovery check")
+    parser.add_argument("-c", "--continue", dest="continue_session", action="store_true",
+                        help="Resume the most recent session without prompting")
+    parser.add_argument("--resume", nargs="?", const="", metavar="ID",
+                        help="Resume a saved history session by id (most recent if no id given)")
     args = parser.parse_args()
 
     kodiqa = Kodiqa()
     if args.no_update:
         kodiqa._skip_updates = True
+    if args.continue_session:
+        kodiqa._auto_resume = True
+    if args.resume is not None:
+        kodiqa._resume_id = args.resume
     if args.model:
         kodiqa.model = kodiqa._resolve_model_name(args.model)
     if args.headless:

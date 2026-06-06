@@ -235,3 +235,102 @@ class TestOpenAIRequestBody:
     def test_gpt_uses_max_tokens(self):
         b = self._body("gpt-4o")
         assert "max_tokens" in b and "max_completion_tokens" not in b
+
+
+class TestRedoCommand:
+    """/redo must be a registered slash command."""
+
+    def test_redo_in_commands(self):
+        from kodiqa import Kodiqa
+        assert "/redo" in Kodiqa._SLASH_COMMANDS
+
+
+class TestLiveTicker:
+    """StreamWriter's live cost/token ticker."""
+
+    def test_ticker_estimates_tokens_and_cost(self):
+        from kodiqa import StreamWriter
+        w = StreamWriter(MagicMock(), compact=True, out_rate=15.0 / 1_000_000)
+        w._out_chars = 4000  # ~1000 tokens at ~4 chars/token
+        t = w._ticker()
+        assert "tok" in t and "$" in t
+
+    def test_ticker_hides_cost_for_free_models(self):
+        from kodiqa import StreamWriter
+        w = StreamWriter(MagicMock(), compact=True, out_rate=0.0)
+        w._out_chars = 400
+        t = w._ticker()
+        assert "$" not in t  # local/free model → no dollar figure
+        assert "tok" in t
+
+    def test_write_counts_output_chars(self):
+        from kodiqa import StreamWriter
+        w = StreamWriter(MagicMock(), compact=False)
+        w.write("hello")
+        w.write(" world")
+        assert w._out_chars == 11
+
+    def test_output_rate_priced(self):
+        from kodiqa import Kodiqa
+        from config import CLAUDE_ALIASES
+        k = MagicMock()
+        k.model = CLAUDE_ALIASES["sonnet"]
+        assert Kodiqa._output_rate(k) > 0
+
+
+class TestDiffstat:
+    """End-of-turn diffstat rollup from the change log."""
+
+    def test_show_diffstat_prints_summary(self):
+        import actions
+        from kodiqa import Kodiqa
+        actions.clear_change_log()
+        actions._record_change("/proj/a.py", "x\n", "x\ny\nz\n")
+        k = MagicMock()
+        k.cwd = "/proj"
+        Kodiqa._show_diffstat(k)
+        printed = " ".join(str(c) for c in k.console.print.call_args_list)
+        assert "changed" in printed
+        actions.clear_change_log()
+
+    def test_show_diffstat_silent_when_no_changes(self):
+        import actions
+        from kodiqa import Kodiqa
+        actions.clear_change_log()
+        k = MagicMock()
+        k.cwd = "/proj"
+        Kodiqa._show_diffstat(k)
+        k.console.print.assert_not_called()
+
+
+class TestResumeFromHistory:
+    """--resume wiring: resume a saved history session by id (or latest)."""
+
+    def test_resume_latest(self, tmp_path, monkeypatch):
+        import json
+        import kodiqa
+        monkeypatch.setattr(kodiqa, "KODIQA_DIR", str(tmp_path))
+        hist = tmp_path / "history"
+        hist.mkdir()
+        (hist / "index.json").write_text(json.dumps([{"id": 1}, {"id": 2}]))
+        (hist / "session_2.json").write_text(json.dumps(
+            {"model": "claude", "cwd": "/nonexistent_xyz",
+             "history": [{"role": "user", "content": "hi"}]}))
+        k = MagicMock()
+        k.cwd = str(tmp_path)
+        kodiqa.Kodiqa._resume_from_history(k, None)  # None → most recent (id 2)
+        assert k.history == [{"role": "user", "content": "hi"}]
+        assert k.model == "claude"
+
+    def test_resume_missing_id(self, tmp_path, monkeypatch):
+        import json
+        import kodiqa
+        monkeypatch.setattr(kodiqa, "KODIQA_DIR", str(tmp_path))
+        hist = tmp_path / "history"
+        hist.mkdir()
+        (hist / "index.json").write_text(json.dumps([{"id": 1}]))
+        k = MagicMock()
+        k.cwd = str(tmp_path)
+        kodiqa.Kodiqa._resume_from_history(k, "999")
+        printed = " ".join(str(c) for c in k.console.print.call_args_list)
+        assert "not found" in printed
