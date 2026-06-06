@@ -602,7 +602,7 @@ class Kodiqa:
     # ── Tab Completion ──
 
     _SLASH_COMMANDS = [
-        "/model", "/models", "/pull", "/delete", "/rm", "/multi", "/single", "/scan", "/clear", "/compact",
+        "/model", "/models", "/pull", "/delete", "/rm", "/update", "/multi", "/single", "/scan", "/clear", "/compact",
         "/memories", "/forget", "/context", "/key", "/tokens", "/config",
         "/export", "/checkpoint", "/restore", "/env", "/verbose", "/mode",
         "/plan", "/accept", "/search", "/cd", "/branch", "/mcp",
@@ -1349,12 +1349,13 @@ class Kodiqa:
         except Exception:
             pass
 
-    def _check_updates(self):
+    def _check_updates(self, show_welcome=True):
         """Check for model updates and new models on startup.
 
         Opt-out via --no-update / config check_updates=false, and throttled to run
         at most once per update_check_interval_hours (default 24) so the per-model
         `ollama pull` sweep + ollama.com scrape don't block every launch.
+        Called with show_welcome=False from /update (mid-session, banner already shown).
         """
         import subprocess
 
@@ -1424,9 +1425,10 @@ class Kodiqa:
             if updated_count > 0:
                 self.console.print(f"\n[green]{updated_count} model(s) updated![/]")
 
-        # Show welcome before new models list
-        self._welcome()
-        self._welcome_shown = True
+        # Show welcome before new models list (skipped when invoked mid-session via /update)
+        if show_welcome:
+            self._welcome()
+            self._welcome_shown = True
 
         # 2. Fetch available models from Ollama library
         new_models = self._fetch_ollama_library(installed)
@@ -1520,6 +1522,7 @@ class Kodiqa:
                 "[bold]/models[/]       - List all available models\n"
                 "[bold]/pull <model>[/]  - Download an Ollama model\n"
                 "[bold]/delete[/] [model] - Delete local Ollama model(s) (interactive if no arg)\n"
+                "[bold]/update[/]       - Check now for model updates + new models (bypasses 24h throttle)\n"
                 "[bold]/scan[/] [path]   - Scan project into context\n"
                 "[bold]/clear[/]         - Clear conversation\n"
                 "[bold]/memories[/]      - Show stored memories\n"
@@ -1754,6 +1757,11 @@ class Kodiqa:
             self.console.print(f"Single model mode: [cyan]{self.model}[/]")
         elif command == "/models":
             self._list_models()
+        elif command == "/update":
+            # Force an immediate model update/discovery check, bypassing the throttle.
+            self._skip_updates = False
+            self.settings["last_update_check"] = 0
+            self._check_updates(show_welcome=False)
         elif command in ("/delete", "/rm"):
             self._delete_model(arg)
         elif command == "/pull":

@@ -4,6 +4,11 @@ All notable changes to Kodiqa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.4.2] - 2026-06-06
+
+### Added
+- `/update` — force a model update + new-model discovery check on demand, bypassing the 24h startup throttle added in 3.4.0 (does not reprint the welcome banner).
+
 ## [3.4.1] - 2026-06-06
 
 ### Fixed

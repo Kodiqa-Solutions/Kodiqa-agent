@@ -190,7 +190,7 @@ def _dispatch_chat(self, user_msg):
 - `bin/kodiqa` — shell script that runs venv Python directly
 - `pyproject.toml` — pip-installable package with `kodiqa` entry point
 - Install: `pip install kodiqa` (PyPI) or `pip install -e .` (editable)
-- Current version: v3.4.1 (AGPL-3.0)
+- Current version: v3.4.2 (AGPL-3.0)
 - PyPI: https://pypi.org/project/kodiqa/
 - Landing page: https://kodiqa-solutions.github.io/Kodiqa-agent/ (GitHub Pages, `docs/index.html`)
 
@@ -290,7 +290,7 @@ def _dispatch_chat(self, user_msg):
 - `~/.kodiqa/exports/` — exported session markdown files
 - `~/.kodiqa/error.log` — error log
 
-### Slash Commands (71 total)
+### Slash Commands (72 total)
 | Command | Description |
 |---------|-------------|
 | `/model <name>` | Switch model (interactive picker if no arg) |
@@ -299,6 +299,7 @@ def _dispatch_chat(self, user_msg):
 | `/models` | List all available models (with live API discovery) |
 | `/pull <model>` | Download an Ollama model on demand |
 | `/delete [model]` | Delete local Ollama model(s) — interactive picker if no arg (`/rm` alias) |
+| `/update` | Force a model update + new-model check now (bypasses the 24h startup throttle) |
 | `/scan [path]` | Scan project into context (with progress + symbol extraction) |
 | `/clear` | Clear conversation |
 | `/compact` | Summarize conversation to save context |
@@ -381,7 +382,7 @@ source ~/LLMS/kodiqa/venv/bin/activate && pytest -v
 - Python 3.9+, rich, beautifulsoup4, requests, prompt_toolkit, pytest (dev)
 - Ollama installed at `/Applications/Ollama.app`
 - Virtual environment at `./venv/`
-- Current version: v3.4.1 (AGPL-3.0)
+- Current version: v3.4.2 (AGPL-3.0)
 
 ### Adding a New Tool
 1. Add the handler function `do_<name>()` in `actions.py`
