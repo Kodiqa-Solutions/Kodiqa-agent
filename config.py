@@ -312,6 +312,9 @@ PERSONAS = {
 # ── Changelog ──
 # Canonical changelog is CHANGELOG.md — this list powers the /changelog command
 CHANGELOG = [
+    {"version": "v3.18.0", "date": "2026-06-27", "changes": [
+        "Local-model speed/memory (Phase 1): Kodiqa-spawned Ollama servers now enable flash attention + KV-cache quantization (OLLAMA_FLASH_ATTENTION=1, OLLAMA_KV_CACHE_TYPE=q8_0) by default — ~half the KV-cache RAM, faster long contexts, negligible quality loss. Tune via config flash_attention / kv_cache_type (q8_0/q4_0/f16); your own OLLAMA_* env vars win.",
+    ]},
     {"version": "v3.17.0", "date": "2026-06-27", "changes": [
         "HuggingFace GGUF fallback: when a model isn't in Ollama's registry (or cloud), Kodiqa searches HuggingFace for a community GGUF build, lists the quant levels with sizes to choose from, and installs it via 'ollama pull hf.co/<repo>:<quant>'. Escalation per model: Ollama registry -> :cloud -> HuggingFace.",
         "Pulls now show live progress, list each model's download size (or a cloud label, resolving non-standard/sized-only tags via the library tags page) next to its pull count, paginate the full model list (next/prev), let you say 'n' to pick a different model (pick-again loop), and can be cancelled mid-download with Esc (confirm) or Ctrl+C.",

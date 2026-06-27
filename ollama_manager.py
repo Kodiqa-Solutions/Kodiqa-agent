@@ -45,10 +45,37 @@ class OllamaManager:
         # Try to start Ollama (OLLAMA_BIN already prefers the MLX-capable build)
         self.agent.console.print("[dim]Starting Ollama...[/]")
         if self._spawn_serve():
-            self.agent.console.print("[green]●[/] Ollama started")
+            self.agent.console.print(f"[green]●[/] Ollama started{self._serve_opts_note()}")
             return True
         self.agent.console.print("[yellow]●[/] Could not start Ollama [dim](start manually: ollama serve)[/]")
         return False
+
+    def _serve_env(self):
+        """Environment for a server WE spawn. Ollama ships flash attention and
+        KV-cache quantization OFF; we turn them on by default because they cut RAM
+        (KV cache → ½ at q8_0, ¼ at q4_0) and speed up long contexts with
+        negligible quality loss. User-set env vars always win (setdefault), and
+        config keys `flash_attention` / `kv_cache_type` (f16 = off) tune it."""
+        env = os.environ.copy()
+        cfg = getattr(self.agent, "config", {}) or {}
+        kv = cfg.get("kv_cache_type", "q8_0")
+        want_flash = cfg.get("flash_attention", True) or (kv and kv != "f16")
+        if want_flash:  # KV-cache quant only takes effect with flash attention on
+            env.setdefault("OLLAMA_FLASH_ATTENTION", "1")
+        if kv and kv != "f16":
+            env.setdefault("OLLAMA_KV_CACHE_TYPE", kv)
+        return env
+
+    def _serve_opts_note(self):
+        """A dim ' (flash attn, q8_0 KV cache)' suffix describing the speed/memory
+        options we enabled, or '' if none — for the startup message."""
+        env = self._serve_env()
+        bits = []
+        if env.get("OLLAMA_FLASH_ATTENTION") == "1":
+            bits.append("flash attn")
+        if env.get("OLLAMA_KV_CACHE_TYPE"):
+            bits.append(f"{env['OLLAMA_KV_CACHE_TYPE']} KV cache")
+        return f" [dim]({', '.join(bits)})[/]" if bits else ""
 
     def _spawn_serve(self):
         """Start `OLLAMA_BIN serve` and wait (up to 10s) until it answers. Tracks
@@ -58,6 +85,7 @@ class OllamaManager:
                 [OLLAMA_BIN, "serve"],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                env=self._serve_env(),
             )
         except Exception:
             _logger.debug("ignored error in _spawn_serve", exc_info=True)
@@ -153,7 +181,7 @@ class OllamaManager:
             except Exception:
                 break
         if self._spawn_serve():
-            self.agent.console.print("[green]●[/] Ollama (MLX) ready")
+            self.agent.console.print(f"[green]●[/] Ollama (MLX) ready{self._serve_opts_note()}")
         else:
             self.agent.console.print("[yellow]●[/] Could not start the MLX build [dim](models needing MLX may fail)[/]")
 

@@ -458,6 +458,60 @@ class TestUnloadAndShutdown:
         assert not pidfile.exists()
 
 
+class TestServeEnv:
+    """Phase 1: flash-attention + KV-cache-quant defaults for spawned servers."""
+
+    def _mgr(self, config):
+        agent = MagicMock()
+        agent.config = config
+        return OllamaManager(agent)
+
+    def test_defaults_enable_flash_and_q8_kv(self, monkeypatch):
+        monkeypatch.delenv("OLLAMA_FLASH_ATTENTION", raising=False)
+        monkeypatch.delenv("OLLAMA_KV_CACHE_TYPE", raising=False)
+        env = self._mgr({})._serve_env()
+        assert env["OLLAMA_FLASH_ATTENTION"] == "1"
+        assert env["OLLAMA_KV_CACHE_TYPE"] == "q8_0"
+
+    def test_user_env_wins(self, monkeypatch):
+        monkeypatch.setenv("OLLAMA_KV_CACHE_TYPE", "q4_0")
+        monkeypatch.setenv("OLLAMA_FLASH_ATTENTION", "0")
+        env = self._mgr({})._serve_env()
+        assert env["OLLAMA_KV_CACHE_TYPE"] == "q4_0"  # not overridden
+        assert env["OLLAMA_FLASH_ATTENTION"] == "0"
+
+    def test_f16_kv_disables_kv_quant(self, monkeypatch):
+        monkeypatch.delenv("OLLAMA_FLASH_ATTENTION", raising=False)
+        monkeypatch.delenv("OLLAMA_KV_CACHE_TYPE", raising=False)
+        env = self._mgr({"kv_cache_type": "f16", "flash_attention": False})._serve_env()
+        assert "OLLAMA_KV_CACHE_TYPE" not in env
+        assert "OLLAMA_FLASH_ATTENTION" not in env
+
+    def test_kv_quant_forces_flash_on(self, monkeypatch):
+        monkeypatch.delenv("OLLAMA_FLASH_ATTENTION", raising=False)
+        monkeypatch.delenv("OLLAMA_KV_CACHE_TYPE", raising=False)
+        # flash off but kv quant requested → flash forced on (kv needs it)
+        env = self._mgr({"kv_cache_type": "q4_0", "flash_attention": False})._serve_env()
+        assert env["OLLAMA_FLASH_ATTENTION"] == "1"
+        assert env["OLLAMA_KV_CACHE_TYPE"] == "q4_0"
+
+    def test_spawn_serve_passes_env(self, monkeypatch):
+        captured = {}
+        def fake_popen(argv, **kw):
+            captured["env"] = kw.get("env")
+            raise RuntimeError("stop after capture")  # don't actually wait
+        monkeypatch.setattr("ollama_manager.subprocess.Popen", fake_popen)
+        monkeypatch.delenv("OLLAMA_FLASH_ATTENTION", raising=False)
+        self._mgr({})._spawn_serve()
+        assert captured["env"]["OLLAMA_FLASH_ATTENTION"] == "1"
+
+    def test_opts_note_reflects_settings(self, monkeypatch):
+        monkeypatch.delenv("OLLAMA_FLASH_ATTENTION", raising=False)
+        monkeypatch.delenv("OLLAMA_KV_CACHE_TYPE", raising=False)
+        note = self._mgr({})._serve_opts_note()
+        assert "flash attn" in note and "q8_0 KV cache" in note
+
+
 class TestEnsureMlxServer:
     def test_noop_when_no_mlx_build(self, monkeypatch):
         # OLLAMA_BIN has no MLX → nothing better to offer, leave the server alone.

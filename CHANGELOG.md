@@ -4,6 +4,18 @@ All notable changes to Kodiqa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.18.0] - 2026-06-27
+
+Local-model speed & memory — Phase 1 of the model-optimization roadmap.
+
+### Added
+- **Flash attention + KV-cache quantization on by default** for Ollama servers Kodiqa starts. Ollama ships both off; Kodiqa now spawns its server with `OLLAMA_FLASH_ATTENTION=1` and `OLLAMA_KV_CACHE_TYPE=q8_0`, which roughly **halves KV-cache RAM** and speeds up long contexts with negligible quality loss — for every local model, for free. The startup line shows what's active (e.g. `Ollama started (flash attn, q8_0 KV cache)`).
+  - Tunable via `~/.kodiqa/config.json`: `flash_attention` (default true) and `kv_cache_type` (`q8_0` default, `q4_0` for ¼ KV RAM, `f16` to disable). KV-cache quant forces flash attention on (it requires it). Any `OLLAMA_*` env var you set yourself always wins.
+  - Applies only to servers Kodiqa spawns (not a separately-running GUI app), and the KV-cache setting is global to that server.
+
+### Tests
+- `test_ollama_pull.py` — `_serve_env` defaults, user-env precedence, `f16` disable, KV-quant-forces-flash, env passed to the spawned process, and the startup note. 533 total.
+
 ## [3.17.0] - 2026-06-27
 
 Pull any model — Kodiqa now falls back to HuggingFace when Ollama doesn't host it.
