@@ -12,6 +12,7 @@ import re
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 
 import requests
@@ -50,16 +51,23 @@ class OllamaManager:
         self.agent.console.print("[yellow]●[/] Could not start Ollama [dim](start manually: ollama serve)[/]")
         return False
 
+    def _opt(self, key, default):
+        """Read an optimization knob: settings.json (set via /tune) wins, then
+        config.json (hand-edited), else the default."""
+        for store in (getattr(self.agent, "settings", None), getattr(self.agent, "config", None)):
+            if isinstance(store, dict) and key in store:
+                return store[key]
+        return default
+
     def _serve_env(self):
         """Environment for a server WE spawn. Ollama ships flash attention and
         KV-cache quantization OFF; we turn them on by default because they cut RAM
         (KV cache → ½ at q8_0, ¼ at q4_0) and speed up long contexts with
-        negligible quality loss. User-set env vars always win (setdefault), and
-        config keys `flash_attention` / `kv_cache_type` (f16 = off) tune it."""
+        negligible quality loss. User-set env vars always win (setdefault); knobs
+        `flash_attention` / `kv_cache_type` (f16 = off) tune it (via /tune or config)."""
         env = os.environ.copy()
-        cfg = getattr(self.agent, "config", {}) or {}
-        kv = cfg.get("kv_cache_type", "q8_0")
-        want_flash = cfg.get("flash_attention", True) or (kv and kv != "f16")
+        kv = self._opt("kv_cache_type", "q8_0")
+        want_flash = self._opt("flash_attention", True) or (kv and kv != "f16")
         if want_flash:  # KV-cache quant only takes effect with flash attention on
             env.setdefault("OLLAMA_FLASH_ATTENTION", "1")
         if kv and kv != "f16":
@@ -544,7 +552,7 @@ class OllamaManager:
             self.agent.console.print(f"  [yellow]No GGUF build found on HuggingFace for {name}.[/]")
             return False, name, False
         repo_id, likes = repos[0]
-        self.agent.console.print(f"  [dim]Found [cyan]{repo_id}[/][dim] ({likes}★). Listing quants...[/]")
+        self.agent.console.print(f"  [dim]Found [cyan]{repo_id}[/][dim] ({likes}★){self._gguf_repo_note(repo_id)}. Listing quants...[/]")
         quants = self._hf_quants(repo_id)
         if not quants:
             self.agent.console.print(f"  [yellow]Couldn't list quant files for {repo_id}.[/]")
@@ -591,8 +599,25 @@ class OllamaManager:
             return []
         repos = [(m.get("id", ""), m.get("likes", 0) or 0)
                  for m in data if "gguf" in m.get("id", "").lower()]
-        repos.sort(key=lambda r: -r[1])
+        # Prefer trusted uploaders that ship imatrix / dynamic quants (best
+        # quality-per-byte), then fall back to popularity.
+        def rank(r):
+            owner = r[0].split("/")[0].lower()
+            return (0 if owner in self._PREFERRED_GGUF_OWNERS else 1, -r[1])
+        repos.sort(key=rank)
         return repos
+
+    _PREFERRED_GGUF_OWNERS = {"unsloth", "bartowski", "ggml-org", "lmstudio-community"}
+
+    @staticmethod
+    def _gguf_repo_note(repo_id):
+        """A quality note for known GGUF uploaders (imatrix / dynamic quants)."""
+        owner = repo_id.split("/")[0].lower()
+        if owner == "unsloth":
+            return " [dim]— Unsloth dynamic (UD) + imatrix, best quality-per-byte[/]"
+        if owner in ("bartowski", "lmstudio-community"):
+            return " [dim]— imatrix quants[/]"
+        return ""
 
     def _hf_quants(self, repo_id):
         """Return [(quant_label, total_size_bytes), ...] for a GGUF repo, smallest
@@ -964,6 +989,83 @@ class OllamaManager:
                 self.agent._invalidate_model_cache()
             if cancelled:
                 break
+
+    # Quant levels `ollama create --quantize` accepts (K-quants + legacy). IQ/UD
+    # dynamic quants are NOT available this way — use the HF download path for those.
+    QUANTIZE_LEVELS = {
+        "q4_0", "q4_1", "q5_0", "q5_1", "q8_0",
+        "q3_K_S", "q3_K_M", "q3_K_L", "q4_K_S", "q4_K_M", "q5_K_S", "q5_K_M", "q6_K",
+    }
+
+    def quantize_model(self, arg):
+        """Build a smaller variant of a model on-device via `ollama create --quantize`.
+
+        Usage: /quantize <source> <quant> [new-name]. The source must be an
+        fp16/fp32 GGUF or Safetensors model (you can't re-quantize an already-
+        quantized model). Only K-quants/legacy are supported here (no IQ/UD)."""
+        parts = (arg or "").split()
+        if len(parts) < 2:
+            self.agent.console.print(
+                "[yellow]Usage: /quantize <source> <quant> [new-name][/] "
+                "[dim](quant e.g. q4_K_M; source must be an fp16/fp32 model)[/]")
+            return
+        source, quant = parts[0], parts[1]
+        new_name = parts[2] if len(parts) > 2 else f"{source.split(':')[0].split('/')[-1]}-{quant.lower()}"
+        if quant not in self.QUANTIZE_LEVELS:
+            self.agent.console.print(
+                f"[yellow]Unsupported quant '{quant}'.[/] [dim]ollama create supports: "
+                f"{', '.join(sorted(self.QUANTIZE_LEVELS))}. IQ/UD dynamic quants need the HF download path.[/]")
+            return
+        self.agent.console.print(f"  [yellow]●[/] Quantizing [cyan]{source}[/] → [cyan]{new_name}[/] [dim]({quant})[/]...")
+        mf = None
+        try:
+            with tempfile.NamedTemporaryFile("w", suffix=".Modelfile", delete=False) as f:
+                f.write(f"FROM {source}\n")
+                mf = f.name
+            rc = subprocess.run([OLLAMA_BIN, "create", new_name, "--quantize", quant, "-f", mf]).returncode
+        except KeyboardInterrupt:
+            self.agent.console.print("  [yellow]Aborted.[/]")
+            return
+        except Exception as e:
+            self.agent.console.print(f"  [red]●[/] Error: {e}")
+            return
+        finally:
+            if mf:
+                try:
+                    os.remove(mf)
+                except Exception:
+                    _logger.debug("ignored error removing temp Modelfile", exc_info=True)
+        if rc == 0:
+            self.agent.console.print(f"  [green]●[/] Created [cyan]{new_name}[/]! [dim](switch with /model {new_name})[/]")
+            self.agent._invalidate_model_cache()
+        else:
+            self.agent.console.print(
+                f"  [red]●[/] Quantize failed (exit {rc}). [dim]The source must be an fp16/fp32 GGUF or "
+                "Safetensors model — you can't re-quantize an already-quantized one.[/]")
+
+    # Curated strong local coding models (Qwen-Coder lineage + REAP-pruned MoE for
+    # big-RAM machines). Starting points, not exhaustive; sizes/fit shown live.
+    CODING_RECOMMENDATIONS = [
+        ("qwen3-coder", "Qwen3 Coder — strong agentic coder (MoE)"),
+        ("qwen2.5-coder:7b", "Qwen2.5 Coder 7B — great quality/size for laptops"),
+        ("qwen2.5-coder:14b", "Qwen2.5 Coder 14B — stronger, needs more RAM"),
+        ("qwen2.5-coder:32b", "Qwen2.5 Coder 32B — near-frontier local coding"),
+        ("deepseek-coder-v2", "DeepSeek-Coder-V2 — capable MoE coder"),
+        ("hf.co/unsloth/Qwen3-Coder-REAP-25B-A3B-GGUF", "Qwen3-Coder REAP — expert-pruned, ~coding-lossless (big)"),
+    ]
+
+    def recommend_models(self, arg=""):
+        """Suggest strong local coding models, annotated with size + fit for this
+        machine (Phase 4 / research-backed: Qwen-Coder lineage; REAP for big RAM)."""
+        budget, blabel = self._memory_budget()
+        if budget:
+            self.agent.console.print(f"\n[dim]Your machine: ~{self._fmt_size(budget)} usable {blabel}.[/]")
+        self.agent.console.print("[bold]Recommended local coding models[/] [dim](sized for what fits)[/]:")
+        for i, (name, note) in enumerate(self.CODING_RECOMMENDATIONS, 1):
+            info = self._registry_info(name) if not name.startswith("hf.co/") else (None, False, name)
+            fit = self._fit_marker(info[0]) if info[0] else ""
+            self.agent.console.print(f"  [cyan bold]{i}.[/] [cyan]{name}[/] [dim]({note})[/] {self._size_tag(info)} {fit}")
+        self.agent.console.print("[dim]Pull one with[/] [bold]/pull <name>[/][dim]; hf.co/… entries download via the HuggingFace fallback.[/]")
 
     def delete_model(self, arg):
         """Delete one or more locally downloaded Ollama models (frees disk)."""

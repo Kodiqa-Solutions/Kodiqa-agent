@@ -145,3 +145,48 @@ class TestLoadConfig:
         monkeypatch.setattr("config.CONFIG_FILE", str(config_file))
         cfg = load_config()
         assert cfg["max_iterations"] == DEFAULTS["max_iterations"]
+
+
+class TestSaveSettingsSafety:
+    """save_settings must not silently drop API keys on a partial save, and keeps a .bak."""
+
+    def _point_at(self, tmp_path, monkeypatch):
+        import config
+        sf = tmp_path / "settings.json"
+        monkeypatch.setattr(config, "SETTINGS_FILE", str(sf))
+        monkeypatch.setattr(config, "KODIQA_DIR", str(tmp_path))
+        return config, sf
+
+    def test_partial_save_preserves_api_keys(self, tmp_path, monkeypatch):
+        config, sf = self._point_at(tmp_path, monkeypatch)
+        sf.write_text(json.dumps({"qwen_api_key": "sk-secret", "default_model": "x"}))
+        config.save_settings({"kv_cache_type": "q4_0"})  # partial dict, missing the key
+        out = json.loads(sf.read_text())
+        assert out["qwen_api_key"] == "sk-secret"  # preserved
+        assert out["kv_cache_type"] == "q4_0"
+
+    def test_explicit_clear_is_honored(self, tmp_path, monkeypatch):
+        config, sf = self._point_at(tmp_path, monkeypatch)
+        sf.write_text(json.dumps({"qwen_api_key": "sk-secret"}))
+        config.save_settings({"qwen_api_key": ""})  # explicit clear
+        assert json.loads(sf.read_text())["qwen_api_key"] == ""
+
+    def test_writes_backup(self, tmp_path, monkeypatch):
+        config, sf = self._point_at(tmp_path, monkeypatch)
+        sf.write_text(json.dumps({"a": 1}))
+        config.save_settings({"b": 2})
+        assert (tmp_path / "settings.json.bak").exists()
+        assert json.loads((tmp_path / "settings.json.bak").read_text()) == {"a": 1}
+
+
+class TestVersionHelpers:
+    def test_version_is_newer_numeric(self):
+        from config import version_is_newer
+        assert version_is_newer("3.19.0", "3.18.0")
+        assert version_is_newer("v3.18.1", "3.18.0")
+        assert not version_is_newer("3.18.0", "3.18.0")
+        assert not version_is_newer("3.9.0", "3.18.0")  # numeric, not string compare
+
+    def test_installed_version_matches_changelog(self):
+        from config import installed_version, CHANGELOG
+        assert installed_version() == CHANGELOG[0]["version"].lstrip("vV")

@@ -462,6 +462,225 @@ class TestUnloadAndShutdown:
         assert not pidfile.exists()
 
 
+class TestQuantSourcing:
+    """Phase 3: prefer imatrix/UD- uploaders + label them."""
+
+    def test_prefers_trusted_uploaders_over_likes(self, monkeypatch):
+        payload = [
+            {"id": "randomguy/Qwen-GGUF", "likes": 500},
+            {"id": "unsloth/Qwen-GGUF", "likes": 100},
+            {"id": "bartowski/Qwen-GGUF", "likes": 50},
+        ]
+        monkeypatch.setattr("ollama_manager.requests.get",
+                            lambda *a, **k: SimpleNamespace(json=lambda: payload, raise_for_status=lambda: None))
+        repos = [r[0] for r in OllamaManager(MagicMock())._hf_search_gguf("Qwen")]
+        assert repos == ["unsloth/Qwen-GGUF", "bartowski/Qwen-GGUF", "randomguy/Qwen-GGUF"]
+
+    def test_repo_note(self):
+        assert "Unsloth" in OllamaManager._gguf_repo_note("unsloth/X-GGUF")
+        assert "imatrix" in OllamaManager._gguf_repo_note("bartowski/X-GGUF")
+        assert OllamaManager._gguf_repo_note("randomguy/X-GGUF") == ""
+
+
+class TestOptReader:
+    """Phase 3: settings-over-config knob reader."""
+
+    def test_settings_wins_over_config(self):
+        agent = MagicMock()
+        agent.settings = {"kv_cache_type": "q4_0"}
+        agent.config = {"kv_cache_type": "q8_0"}
+        assert OllamaManager(agent)._opt("kv_cache_type", "x") == "q4_0"
+
+    def test_config_fallback(self):
+        agent = MagicMock()
+        agent.settings = {}
+        agent.config = {"flash_attention": False}
+        assert OllamaManager(agent)._opt("flash_attention", True) is False
+
+    def test_default_when_neither(self):
+        agent = MagicMock()
+        agent.settings = {}
+        agent.config = {}
+        assert OllamaManager(agent)._opt("kv_cache_type", "q8_0") == "q8_0"
+
+
+class TestQuantizeAndRecommend:
+    """Phase 4: on-device /quantize + /recommend."""
+
+    def _mgr(self):
+        agent = MagicMock()
+        agent._mem_budget = (0, "")
+        return OllamaManager(agent)
+
+    def test_quantize_rejects_unsupported_quant(self, monkeypatch):
+        run = MagicMock()
+        monkeypatch.setattr("ollama_manager.subprocess.run", run)
+        self._mgr().quantize_model("mymodel iq2_m")
+        run.assert_not_called()  # IQ not supported via ollama create
+
+    def test_quantize_runs_ollama_create(self, monkeypatch):
+        calls = {}
+        def fake_run(argv, **kw):
+            calls["argv"] = argv
+            return SimpleNamespace(returncode=0)
+        monkeypatch.setattr("ollama_manager.subprocess.run", fake_run)
+        m = self._mgr()
+        m.quantize_model("base-f16 q4_K_M myq")
+        argv = calls["argv"]
+        assert argv[:3] == [argv[0], "create", "myq"]
+        assert "--quantize" in argv and "q4_K_M" in argv and "-f" in argv
+
+    def test_quantize_default_name(self, monkeypatch):
+        calls = {}
+        monkeypatch.setattr("ollama_manager.subprocess.run",
+                            lambda argv, **kw: calls.setdefault("argv", argv) or SimpleNamespace(returncode=0))
+        self._mgr().quantize_model("llama3.1:8b-fp16 q4_K_M")
+        assert "llama3.1-q4_k_m" in calls["argv"]  # derived from source + quant
+
+    def test_quantize_usage_when_missing_args(self, monkeypatch):
+        run = MagicMock()
+        monkeypatch.setattr("ollama_manager.subprocess.run", run)
+        self._mgr().quantize_model("onlyone")
+        run.assert_not_called()
+
+    def test_recommend_lists_curated(self, monkeypatch):
+        m = self._mgr()
+        seen = []
+        m._registry_info = lambda n, timeout=8: (4_000_000_000, False, n)
+        m.agent.console.print = lambda *a, **k: seen.append(" ".join(str(x) for x in a))
+        m.recommend_models()
+        blob = "\n".join(seen)
+        assert "qwen2.5-coder:7b" in blob and "Recommended local coding models" in blob
+
+    def test_commands_registered(self):
+        from kodiqa import Kodiqa
+        assert "/quantize" in Kodiqa._COMMAND_HANDLERS
+        assert "/recommend" in Kodiqa._COMMAND_HANDLERS
+
+
+class TestTuneCommand:
+    """Phase 3: /tune command + Ollama options wiring (on Kodiqa)."""
+
+    def test_ollama_options_from_settings(self):
+        from kodiqa import Kodiqa
+        k = MagicMock()
+        k.settings = {"ollama_num_ctx": 8192, "ollama_num_gpu": -1}
+        assert Kodiqa._ollama_options(k) == {"num_ctx": 8192, "num_gpu": -1}
+
+    def test_ollama_options_empty_by_default(self):
+        from kodiqa import Kodiqa
+        k = MagicMock()
+        k.settings = {}
+        assert Kodiqa._ollama_options(k) == {}
+
+    def test_cmd_tune_sets_and_persists(self, monkeypatch):
+        import kodiqa as kmod
+        from kodiqa import Kodiqa
+        saved = {}
+        monkeypatch.setattr(kmod, "save_settings", lambda s: saved.update(s))
+        k = MagicMock()
+        k.settings = {}
+        Kodiqa._cmd_tune(k, "ctx 4096")
+        assert k.settings["ollama_num_ctx"] == 4096 and saved["ollama_num_ctx"] == 4096
+
+    def test_cmd_tune_kv_validates(self, monkeypatch):
+        import kodiqa as kmod
+        from kodiqa import Kodiqa
+        monkeypatch.setattr(kmod, "save_settings", lambda s: None)
+        k = MagicMock()
+        k.settings = {}
+        Kodiqa._cmd_tune(k, "kv bogus")
+        assert "kv_cache_type" not in k.settings  # rejected
+        Kodiqa._cmd_tune(k, "kv q4_0")
+        assert k.settings["kv_cache_type"] == "q4_0"
+
+    def test_cmd_tune_reset(self, monkeypatch):
+        import kodiqa as kmod
+        from kodiqa import Kodiqa
+        monkeypatch.setattr(kmod, "save_settings", lambda s: None)
+        k = MagicMock()
+        k.settings = {"ollama_num_ctx": 8192, "kv_cache_type": "q4_0",
+                      "flash_attention": False, "ollama_num_gpu": -1}
+        Kodiqa._cmd_tune(k, "reset")
+        assert k.settings == {}
+
+    def test_tune_registered(self):
+        from kodiqa import Kodiqa
+        assert "/tune" in Kodiqa._COMMAND_HANDLERS
+
+
+class TestAppUpdate:
+    """Self-update: startup PyPI check (throttled) + /upgrade."""
+
+    def _k(self):
+        k = MagicMock()
+        k.config = {}
+        k.settings = {}
+        return k
+
+    def test_upgrade_runs_pip(self, monkeypatch):
+        import kodiqa as kmod
+        from kodiqa import Kodiqa
+        calls = {}
+        monkeypatch.setattr(kmod.subprocess, "run",
+                            lambda argv, **kw: calls.setdefault("argv", argv) or SimpleNamespace(returncode=0))
+        Kodiqa._cmd_upgrade(self._k(), "")
+        assert calls["argv"][1:] == ["-m", "pip", "install", "-U", "kodiqa"]
+
+    def test_check_throttled_skips_fetch(self, monkeypatch):
+        import time as _t
+        import kodiqa as kmod
+        from kodiqa import Kodiqa
+        got = {"fetched": False}
+        monkeypatch.setattr(kmod.requests, "get", lambda *a, **k: got.update(fetched=True))
+        k = self._k()
+        k.settings = {"last_version_check": int(_t.time())}  # just checked → throttled
+        Kodiqa._check_app_update(k)
+        assert got["fetched"] is False
+
+    def test_check_notifies_when_newer(self, monkeypatch):
+        import kodiqa as kmod
+        from kodiqa import Kodiqa
+        monkeypatch.setattr(kmod, "save_settings", lambda s: None)
+        monkeypatch.setattr(kmod.requests, "get",
+                            lambda *a, **k: SimpleNamespace(json=lambda: {"info": {"version": "99.0.0"}}))
+        prints = []
+        k = self._k()
+        k.settings = {"last_version_check": 0}
+        k.console.print = lambda *a, **kw: prints.append(" ".join(str(x) for x in a))
+        Kodiqa._check_app_update(k)
+        assert any("available" in p for p in prints)
+
+    def test_check_silent_when_current(self, monkeypatch):
+        import kodiqa as kmod
+        from kodiqa import Kodiqa
+        from config import installed_version
+        monkeypatch.setattr(kmod, "save_settings", lambda s: None)
+        monkeypatch.setattr(kmod.requests, "get",
+                            lambda *a, **k: SimpleNamespace(json=lambda: {"info": {"version": installed_version()}}))
+        prints = []
+        k = self._k()
+        k.settings = {"last_version_check": 0}
+        k.console.print = lambda *a, **kw: prints.append(" ".join(str(x) for x in a))
+        Kodiqa._check_app_update(k)
+        assert not any("available" in p for p in prints)
+
+    def test_disabled_via_config(self, monkeypatch):
+        import kodiqa as kmod
+        from kodiqa import Kodiqa
+        got = {"fetched": False}
+        monkeypatch.setattr(kmod.requests, "get", lambda *a, **k: got.update(fetched=True))
+        k = self._k()
+        k.config = {"check_app_update": False}
+        k.settings = {"last_version_check": 0}
+        Kodiqa._check_app_update(k)
+        assert got["fetched"] is False
+
+    def test_upgrade_registered(self):
+        from kodiqa import Kodiqa
+        assert "/upgrade" in Kodiqa._COMMAND_HANDLERS
+
+
 class TestFitRecommender:
     """Phase 2: 'fits my machine' memory budget + fit/quality markers."""
 

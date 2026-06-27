@@ -6,16 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [3.18.0] - 2026-06-27
 
-Local-model speed & memory — Phases 1–2 of the model-optimization roadmap (see `docs/model-optimization-research.md`).
+Local-model speed & memory — the full model-optimization roadmap (Phases 1–4, see `docs/model-optimization-research.md`), plus a self-update check and a settings-safety fix.
 
 ### Added
 - **Flash attention + KV-cache quantization on by default** for Ollama servers Kodiqa starts (Phase 1). Ollama ships both off; Kodiqa now spawns its server with `OLLAMA_FLASH_ATTENTION=1` and `OLLAMA_KV_CACHE_TYPE=q8_0`, which roughly **halves KV-cache RAM** and speeds up long contexts with negligible quality loss — for every local model, for free. The startup line shows what's active (e.g. `Ollama started (flash attn, q8_0 KV cache)`).
   - Tunable via `~/.kodiqa/config.json`: `flash_attention` (default true) and `kv_cache_type` (`q8_0` default, `q4_0` for ¼ KV RAM, `f16` to disable). KV-cache quant forces flash attention on (it requires it). Any `OLLAMA_*` env var you set yourself always wins.
   - Applies only to servers Kodiqa spawns (not a separately-running GUI app), and the KV-cache setting is global to that server.
 - **"Fits my machine" recommender** (Phase 2). Kodiqa detects your memory budget (NVIDIA VRAM, else system/unified RAM with an OS reserve) and annotates the model list and the HuggingFace quant picker with **✓ fits / ⚠ tight / ✗ too big** so you can pick a model that'll actually run. The picker header shows your usable budget. Sub-4-bit quants are flagged **"low-bit — may hurt coding"** (coding stays reliable down to ~4-bit; 3/2/1-bit degrade).
+- **Better quant sourcing + `/tune`** (Phase 3). The HuggingFace fallback now **prefers trusted uploaders** (Unsloth UD-/dynamic, bartowski/lmstudio-community imatrix) over raw popularity and labels the source — better quality-per-byte. New **`/tune`** command shows your machine budget and the active runtime knobs and sets them: `ctx` (per-request `num_ctx`), `kv` (`q8_0`/`q4_0`/`f16`), `flash` (on/off), `gpu` (layer offload), `reset`. Knobs persist in settings; `num_ctx`/`num_gpu` are sent with every Ollama request, `kv`/`flash` apply on the next Ollama start.
+- **Self-update check + `/upgrade`.** On startup Kodiqa now checks PyPI (once/day, short timeout, offline-safe) for a newer release and shows a one-line notice — `⬆ Kodiqa X is available (you have Y) — update with /upgrade`. The new **`/upgrade`** command runs `pip install -U kodiqa` for you (restart to apply). Disable the check with `check_app_update: false` in config.
+- **On-device building + recommendations** (Phase 4). New **`/quantize <source> <quant> [name]`** builds a smaller variant on-device via `ollama create --quantize` (K-quants/legacy; the source must be an fp16/fp32 GGUF or Safetensors model). New **`/recommend`** lists strong local coding models (Qwen-Coder lineage + a REAP expert-pruned MoE for big-RAM machines), each annotated with size + ✓/⚠/✗ fit. *(Speculative-decoding auto-pairing was scoped here but deferred — Ollama has no Modelfile instruction to select a draft model yet, only a `draft_num_predict` parameter; see `docs/model-optimization-research.md`.)*
+
+### Fixed
+- **`save_settings` no longer silently drops API keys.** Saving a partial settings dict used to overwrite the whole file; now any `*_api_key` present on disk but missing from the dict being saved is preserved (explicitly clearing a key with `""` is still honored), and a `settings.json.bak` is kept before each write. Guards against accidental clobbers of your keys/config.
 
 ### Tests
-- `test_ollama_pull.py` — Phase 1: `_serve_env` defaults, user-env precedence, `f16` disable, KV-quant-forces-flash, env passed to the spawned process, startup note. Phase 2: memory-budget detection (VRAM vs RAM), fit-marker boundaries, sub-4-bit coding warning. 538 total.
+- `test_ollama_pull.py` — Phase 1: `_serve_env` defaults/precedence/disable/forces-flash/spawn-env/note. Phase 2: memory-budget detection, fit-marker boundaries, sub-4-bit warning. Phase 3: uploader-preference ranking + labels, settings-over-config `_opt`, `/tune` set/validate/reset + `_ollama_options`. Phase 4: `/quantize` validation/command/default-name, `/recommend` listing, command registration. `test_config.py` — `save_settings` key-preservation + `.bak`. 566 total.
 
 ## [3.17.0] - 2026-06-27
 

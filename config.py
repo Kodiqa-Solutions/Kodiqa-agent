@@ -309,12 +309,48 @@ PERSONAS = {
     },
 }
 
+# ── Version / self-update ──
+def installed_version():
+    """The running Kodiqa version. Prefers the bundled changelog's top entry — it
+    ships inside each release so it always matches the running code, unlike pip's
+    `importlib.metadata` which can be stale for editable installs. Falls back to
+    package metadata, then 0.0.0."""
+    try:
+        return CHANGELOG[0]["version"].lstrip("vV")
+    except Exception:
+        try:
+            import importlib.metadata as _im
+            return _im.version("kodiqa")
+        except Exception:
+            return "0.0.0"
+
+
+def _parse_version(v):
+    """('3.18.0' | 'v3.18.0' | '3.18.0rc1') → (3, 18, 0) for comparison."""
+    parts = []
+    for p in str(v).lstrip("vV").split(".")[:3]:
+        digits = "".join(ch for ch in p if ch.isdigit())
+        parts.append(int(digits) if digits else 0)
+    while len(parts) < 3:
+        parts.append(0)
+    return tuple(parts)
+
+
+def version_is_newer(latest, current):
+    """True if `latest` is a strictly newer release than `current`."""
+    return _parse_version(latest) > _parse_version(current)
+
+
 # ── Changelog ──
 # Canonical changelog is CHANGELOG.md — this list powers the /changelog command
 CHANGELOG = [
     {"version": "v3.18.0", "date": "2026-06-27", "changes": [
         "Local-model speed/memory (Phase 1): Kodiqa-spawned Ollama servers now enable flash attention + KV-cache quantization (OLLAMA_FLASH_ATTENTION=1, OLLAMA_KV_CACHE_TYPE=q8_0) by default — ~half the KV-cache RAM, faster long contexts, negligible quality loss. Tune via config flash_attention / kv_cache_type (q8_0/q4_0/f16); your own OLLAMA_* env vars win.",
         "'Fits my machine' (Phase 2): the model list + HuggingFace quant picker now show ✓ fits / ⚠ tight / ✗ too big based on your detected VRAM/RAM budget, and flag sub-4-bit quants as low-bit (may hurt coding).",
+        "Quant sourcing + /tune (Phase 3): the HuggingFace fallback prefers imatrix/dynamic uploaders (Unsloth UD-, bartowski) and labels them; new /tune command sets local runtime knobs (num_ctx, KV-cache type, flash attention, GPU layers) and shows your machine budget.",
+        "On-device building (Phase 4): /quantize builds a smaller model via 'ollama create --quantize' (K-quants, from an fp16/fp32 source); /recommend lists strong local coding models (Qwen-Coder + REAP) annotated with size and fit. (Speculative decoding deferred — Ollama can't select a draft model yet.)",
+        "Fix: save_settings no longer drops API keys on a partial save (preserves on-disk *_api_key values unless explicitly cleared) and keeps a settings.json.bak.",
+        "Self-update: Kodiqa checks PyPI once/day for a newer release and notifies on startup; new /upgrade command runs pip install -U kodiqa. Disable via config check_app_update.",
     ]},
     {"version": "v3.17.0", "date": "2026-06-27", "changes": [
         "HuggingFace GGUF fallback: when a model isn't in Ollama's registry (or cloud), Kodiqa searches HuggingFace for a community GGUF build, lists the quant levels with sizes to choose from, and installs it via 'ollama pull hf.co/<repo>:<quant>'. Escalation per model: Ollama registry -> :cloud -> HuggingFace.",
@@ -450,6 +486,7 @@ DEFAULTS = {
     "hooks": {},
     "check_updates": True,            # check Ollama model updates + new models on startup
     "update_check_interval_hours": 0,   # 0 = check every launch (default); set >0 to throttle to once per N hours
+    "check_app_update": True,         # check PyPI once/day for a newer Kodiqa release and notify
 }
 
 
@@ -508,12 +545,30 @@ def load_settings():
 
 
 def save_settings(settings):
-    """Save settings to ~/.kodiqa/settings.json with owner-only perms (holds API keys)."""
+    """Save settings to ~/.kodiqa/settings.json with owner-only perms (holds API keys).
+
+    Safety: never silently drop an API key that exists on disk but is absent from
+    the dict being saved (guards against an accidental overwrite with a partial
+    dict). Explicitly clearing a key (setting it to "") is still honored. Also
+    keeps a `.bak` of the previous file so an overwrite is recoverable."""
     os.makedirs(KODIQA_DIR, exist_ok=True)
     try:
         os.chmod(KODIQA_DIR, 0o700)
     except OSError:
         pass
+    if os.path.isfile(SETTINGS_FILE):
+        try:
+            existing = json.load(open(SETTINGS_FILE))
+            for k, v in existing.items():
+                if k.endswith("_api_key") and v and k not in settings:
+                    settings[k] = v  # preserve keys omitted from a partial save
+        except Exception:
+            _logger.debug("ignored error merging existing settings", exc_info=True)
+        try:
+            shutil.copy2(SETTINGS_FILE, SETTINGS_FILE + ".bak")
+            os.chmod(SETTINGS_FILE + ".bak", 0o600)
+        except Exception:
+            _logger.debug("ignored error backing up settings", exc_info=True)
     with open(SETTINGS_FILE, "w") as f:
         json.dump(settings, f, indent=2)
     try:

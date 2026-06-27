@@ -64,10 +64,13 @@ arXiv quant eval (2601.14277).
   `num_batch` (512 default; higher = more VRAM/throughput), `num_thread`,
   `keep_alive`, `use_mmap`/`use_mlock`.
 - **Speculative decoding** — ~1.5–3× tok/s, no quality loss. llama.cpp:
-  `-md/--model-draft` + `--spec-draft-n-max`. Ollama: now supported via the
-  `DRAFT` Modelfile instruction + `draft_num_predict` (MLX runner first,
-  ~v0.23.1+). Draft must share tokenizer/family and be much smaller. **Not always
-  a net win** (small-active MoE / older NVIDIA) — make it opt-in/measured.
+  `-md/--model-draft` + `--spec-draft-n-max`. **Ollama: NOT user-configurable yet**
+  — the Modelfile reference has a `draft_num_predict` parameter but **no `DRAFT`
+  instruction to specify which draft model** (verified against docs.ollama.com/modelfile,
+  2026-06; the earlier "DRAFT instruction" claim was wrong). So Kodiqa can't wire
+  draft-model pairing through Ollama today; deferred until Ollama exposes it.
+  Draft must share tokenizer/family and be much smaller. **Not always a net win**
+  (small-active MoE / older NVIDIA).
 - **Apple Metal** — unified memory (no separate VRAM, no copy overhead); bandwidth-
   bound so Q4 runs faster than Q8; plug in AC (battery throttles GPU). GPU memory
   cap ≈ 66–75% of RAM; raise via `sudo sysctl iogpu.wired_limit_mb=<MB>` (leave
@@ -124,8 +127,10 @@ Sources: llama.cpp discussion #9936; KV calculators (lmcache, mbrenndoerfer).
   lists with ✓ fits / ⚠ tight / ✗ too big; warn on sub-4-bit for coding.
 - **Phase 3** — prefer/label imatrix + UD- quants in the HF fallback; per-model
   runtime auto-tune (`num_ctx`/offload).
-- **Phase 4** — `/quantize` (ollama create), speculative-decoding auto-pairing
-  (version-gated), REAP coder recommendations.
+- **Phase 4 (done)** — `/quantize` (`ollama create --quantize`, K-quants/legacy
+  from an fp16/fp32 source) + `/recommend` (fit-aware curated coding models incl.
+  REAP). Speculative-decoding auto-pairing **deferred** — Ollama has no `DRAFT`
+  Modelfile instruction to select a draft model yet (only `draft_num_predict`).
 
 ### Pitfalls
 - Don't recommend sub-4-bit for coding.

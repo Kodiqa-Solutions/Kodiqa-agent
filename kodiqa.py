@@ -35,6 +35,7 @@ from config import (
     CHANGELOG, PERSONAS,
     load_settings, save_settings, load_config, save_default_config, load_kodiqaignore,
     is_claude_model, get_openai_provider,
+    installed_version, version_is_newer,
 )
 from memory import MemoryStore
 from session_store import SessionStore
@@ -681,6 +682,9 @@ class Kodiqa:
         ("/pull", (), "_cmd_pull", "Models & providers", "<model>", "Download an Ollama model"),
         ("/delete", ("/rm",), "_cmd_delete", "Models & providers", "[model]", "Delete local Ollama model(s)"),
         ("/update", (), "_cmd_update", "Models & providers", "", "Check now for model + new-model updates"),
+        ("/tune", (), "_cmd_tune", "Models & providers", "[ctx|kv|flash|gpu|reset]", "Tune local runtime speed/memory (flash attn, KV cache, context, GPU layers)"),
+        ("/quantize", (), "_cmd_quantize", "Models & providers", "<src> <quant>", "Build a smaller model on-device (ollama create --quantize)"),
+        ("/recommend", (), "_cmd_recommend", "Models & providers", "", "Recommend local coding models that fit your machine"),
         ("/key", (), "_cmd_key", "Models & providers", "[provider]", "Add/update an API key"),
         ("/failover", (), "_cmd_failover", "Models & providers", "[on|off|auto|models…]", "Cross-provider failover (auto-retry on another provider when one fails)"),
 
@@ -754,6 +758,7 @@ class Kodiqa:
         ("/teams", (), "_cmd_teams", "Generate & agents", "", "List running/completed teams"),
 
         ("/changelog", (), "_cmd_changelog", "Session & misc", "", "Show version history"),
+        ("/upgrade", (), "_cmd_upgrade", "Session & misc", "", "Update Kodiqa to the latest PyPI release"),
         ("/stats", (), "_cmd_stats", "Session & misc", "", "Session metrics"),
         ("/profile", (), "_cmd_profile", "Session & misc", "", "Save/load config profiles"),
         ("/share", (), "_cmd_share", "Session & misc", "", "Export session as styled HTML"),
@@ -1008,6 +1013,7 @@ class Kodiqa:
         self._check_updates()
         if not self._welcome_shown:
             self._welcome()
+        self._check_app_update()
         try:
             while True:
                 try:
@@ -1682,6 +1688,111 @@ class Kodiqa:
         self._skip_updates = False
         self.settings["last_update_check"] = 0
         self._check_updates(show_welcome=False)
+
+    def _ollama_options(self):
+        """Per-request Ollama `options` from /tune settings (only set keys are
+        sent, so Ollama's own defaults apply otherwise)."""
+        opts = {}
+        nc = self.settings.get("ollama_num_ctx")
+        if nc:
+            opts["num_ctx"] = int(nc)
+        ng = self.settings.get("ollama_num_gpu")
+        if ng is not None and ng != "":
+            opts["num_gpu"] = int(ng)
+        return opts
+
+    def _cmd_tune(self, arg):
+        """Tune local (Ollama) runtime speed/memory knobs. No arg shows status."""
+        om = self.ollama
+        parts = (arg or "").split()
+        if not parts:
+            budget, blabel = om._memory_budget()
+            self.console.print("[bold]Local runtime tuning[/] [dim](Ollama)[/]")
+            if budget:
+                self.console.print(f"  Machine        : ~{om._fmt_size(budget)} usable {blabel}")
+            self.console.print(f"  flash_attention: {om._opt('flash_attention', True)}")
+            self.console.print(f"  kv_cache_type  : {om._opt('kv_cache_type', 'q8_0')} [dim](q8_0=½ KV RAM, q4_0=¼, f16=off)[/]")
+            self.console.print(f"  num_ctx        : {self.settings.get('ollama_num_ctx') or '[dim]model default[/]'}")
+            ng = self.settings.get('ollama_num_gpu')
+            self.console.print(f"  num_gpu        : {ng if ng is not None else '[dim]auto[/]'} [dim](-1 = all layers on GPU)[/]")
+            self.console.print("[dim]Set:[/] /tune ctx 8192 [dim]|[/] /tune kv q8_0|q4_0|f16 [dim]|[/] /tune flash on|off [dim]|[/] /tune gpu -1 [dim]|[/] /tune reset")
+            self.console.print("[dim]kv/flash apply on the next Ollama start; ctx/gpu on the next message.[/]")
+            return
+        key, val = parts[0].lower(), (parts[1] if len(parts) > 1 else "")
+        if key == "reset":
+            for k in ("flash_attention", "kv_cache_type", "ollama_num_ctx", "ollama_num_gpu"):
+                self.settings.pop(k, None)
+            save_settings(self.settings)
+            self.console.print("[green]Tuning reset to defaults.[/]")
+            return
+        if key == "ctx":
+            if not val.isdigit():
+                self.console.print("[yellow]Usage: /tune ctx <tokens>[/]"); return
+            self.settings["ollama_num_ctx"] = int(val)
+        elif key == "kv":
+            if val not in ("q8_0", "q4_0", "f16"):
+                self.console.print("[yellow]Usage: /tune kv q8_0|q4_0|f16[/]"); return
+            self.settings["kv_cache_type"] = val
+        elif key == "flash":
+            if val.lower() not in ("on", "off"):
+                self.console.print("[yellow]Usage: /tune flash on|off[/]"); return
+            self.settings["flash_attention"] = (val.lower() == "on")
+        elif key == "gpu":
+            try:
+                self.settings["ollama_num_gpu"] = int(val)
+            except ValueError:
+                self.console.print("[yellow]Usage: /tune gpu <n|-1>[/]"); return
+        else:
+            self.console.print(f"[yellow]Unknown option '{key}'. Use ctx|kv|flash|gpu|reset.[/]"); return
+        save_settings(self.settings)
+        self.console.print(f"[green]Set {key} = {val}[/] [dim](kv/flash take effect on next Ollama start)[/]")
+
+    def _check_app_update(self, force=False):
+        """Best-effort: once/day, check PyPI for a newer Kodiqa release and notify.
+        Throttled, short timeout, and silent on any failure (offline-safe)."""
+        if not force and self.config.get("check_app_update", True) is False:
+            return
+        now = int(time.time())
+        if not force and (now - self.settings.get("last_version_check", 0) < 86400):
+            return
+        self.settings["last_version_check"] = now
+        try:
+            save_settings(self.settings)
+        except Exception:
+            _logger.debug("ignored error saving last_version_check", exc_info=True)
+        try:
+            latest = requests.get("https://pypi.org/pypi/kodiqa/json", timeout=4).json()["info"]["version"]
+        except Exception:
+            _logger.debug("app update check failed", exc_info=True)
+            return
+        current = installed_version()
+        if version_is_newer(latest, current):
+            self.console.print(
+                f"  [yellow]⬆ Kodiqa {latest} is available[/] [dim](you have {current}) — "
+                f"update with [/][bold]/upgrade[/][dim] or `pip install -U kodiqa`.[/]")
+
+    def _cmd_upgrade(self, arg):
+        """Update Kodiqa to the latest PyPI release via pip."""
+        current = installed_version()
+        self.console.print(f"  [yellow]●[/] Upgrading Kodiqa [dim](current {current})[/] via pip...")
+        try:
+            rc = subprocess.run([sys.executable, "-m", "pip", "install", "-U", "kodiqa"]).returncode
+        except KeyboardInterrupt:
+            self.console.print("  [yellow]Aborted.[/]")
+            return
+        except Exception as e:
+            self.console.print(f"  [red]●[/] Upgrade failed: {e}")
+            return
+        if rc == 0:
+            self.console.print("  [green]●[/] Updated! [dim]Restart Kodiqa to use the new version.[/]")
+        else:
+            self.console.print(f"  [red]●[/] pip exited {rc}. [dim]Try manually: pip install -U kodiqa (or `pipx upgrade kodiqa`).[/]")
+
+    def _cmd_quantize(self, arg):
+        self.ollama.quantize_model(arg)
+
+    def _cmd_recommend(self, arg):
+        self.ollama.recommend_models(arg)
 
     def _cmd_delete(self, arg):
         self._delete_model(arg)
@@ -4374,10 +4485,14 @@ class Kodiqa:
 
     def _stream_ollama(self, messages):
         try:
+            body = {"model": self.model, "messages": messages, "stream": True}
+            opts = self._ollama_options()
+            if opts:
+                body["options"] = opts
             resp = _retry_api_call(
                 lambda: requests.post(
                     f"{OLLAMA_URL}/api/chat",
-                    json={"model": self.model, "messages": messages, "stream": True},
+                    json=body,
                     stream=True, timeout=300,
                 ),
                 provider_name="Ollama",
