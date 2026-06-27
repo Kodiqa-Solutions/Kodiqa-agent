@@ -4,6 +4,27 @@ All notable changes to Kodiqa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.17.0] - 2026-06-27
+
+Pull any model — Kodiqa now falls back to HuggingFace when Ollama doesn't host it.
+
+### Added
+- **HuggingFace GGUF fallback for `/pull` and the startup model list.** When a model isn't in Ollama's registry (and isn't a `:cloud` model), Kodiqa searches HuggingFace for a community GGUF build, shows the available quant levels with their download sizes, lets you pick one, and installs it via `ollama pull hf.co/<repo>:<quant>`. So picking a model that Ollama doesn't host (e.g. many GLM/Qwen/Llama variants) now Just Works instead of erroring.
+  - The full escalation order per model is: Ollama registry → `<name>:cloud` → HuggingFace GGUF.
+  - Quants are listed smallest-first with sizes, so you can avoid the 200GB+ monsters.
+- **Live download progress.** Pulls now stream Ollama's real progress bar (per-layer %, MB, speed) instead of a static "Pulling…" line.
+- **Download sizes shown up front.** The startup "new models" list now shows each model's download size next to its pull count (fetched concurrently from the registry, no downloads), `/pull` shows the size inline, and the confirm step shows the selection's total. Cloud-hosted models (no local weights) are labelled **☁ cloud** instead of a size, and genuinely-unknown ones show **size ?** — so a blank size is never ambiguous. Models without a default `latest` tag are resolved via the library tags page, so non-standard cloud tags (e.g. `mistral-large-3:675b-cloud`) are correctly labelled cloud and sized-only models (e.g. `granite4.1-guardian:8b`) show a real size — and they pull using that resolved tag.
+- **Paginated model list.** The startup list now shows up to ~234 available models (was capped at 100), 100 per page — type **next**/**prev** to page through them. Numbers are global (so `130` works from any page), and sizes are fetched lazily per page so you only pay for pages you actually open.
+- **Pick-again loop.** Answering **n** at the "Download these?" confirm now returns you to the model picker so you can choose a different number (and compare sizes) until you settle on one — instead of bailing out. **skip** cancels.
+- **Cancel a running pull.** Press **Esc** during a download to get a "Cancel this download? [y/N]" prompt, or **Ctrl+C** to cancel immediately. The partial download is cached by Ollama, so re-pulling resumes where it left off.
+
+### Fixed
+- **Ollama no longer leaves a model resident in RAM after you quit.** Ollama keeps the last model loaded for `keep_alive` minutes (default 5), so a 10GB+ model could sit in RAM long after exiting Kodiqa. On quit Kodiqa now unloads loaded models (`keep_alive=0`) to free that RAM immediately. Disable with `unload_ollama_on_exit: false` in `~/.kodiqa/config.json`.
+- **A Kodiqa-started Ollama server is now stopped even across sessions.** The "did we start it?" flag didn't survive a restart, so a server Kodiqa spawned in an earlier session lingered forever. Kodiqa now records the server's PID and stops it on a later exit — while still never touching a GUI-app or user-started server.
+
+### Tests
+- `test_ollama_pull.py` extended: HF GGUF search/filtering, quant parsing (flat, sharded, subfolder), the registry→cloud→HF escalation, the interactive quant picker, registry-size/cloud lookup incl. tags-page tag resolution (non-standard cloud + sized-only), the paginated picker, pull cancellation propagation, and model-unload/orphaned-server shutdown. 527 total.
+
 ## [3.16.3] - 2026-06-27
 
 Pull any model from the list — including MLX and cloud-hosted models.

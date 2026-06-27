@@ -9,7 +9,9 @@ reads it via the back-reference. Kodiqa keeps thin wrappers so call sites are un
 
 import os
 import re
+import signal
 import subprocess
+import sys
 import time
 
 import requests
@@ -66,10 +68,50 @@ class OllamaManager:
                 requests.get(f"{OLLAMA_URL}/api/tags", timeout=2)
                 self.agent._ollama_started_by_us = True
                 self.agent._ollama_proc = proc  # track OUR process for clean shutdown
+                self._write_server_pid(proc.pid)  # so a later session can stop it too
                 return True
             except Exception:
                 continue
         return False
+
+    def _server_pid_file(self):
+        return os.path.join(os.path.expanduser("~/.kodiqa"), "ollama_server.pid")
+
+    def _write_server_pid(self, pid):
+        """Record the PID of an Ollama server WE spawned, so any later Kodiqa
+        session can clean it up (the in-memory _ollama_started_by_us flag doesn't
+        survive a restart, which is why a Kodiqa-started server used to linger)."""
+        try:
+            with open(self._server_pid_file(), "w") as f:
+                f.write(str(pid))
+        except Exception:
+            _logger.debug("ignored error writing ollama pid file", exc_info=True)
+
+    def _stop_orphaned_server(self):
+        """Stop an Ollama server a PREVIOUS Kodiqa session spawned (per the pid
+        file) but didn't get to stop. Only touches that exact PID if it's still an
+        `ollama serve` — never a GUI-app or user-started server."""
+        path = self._server_pid_file()
+        try:
+            with open(path) as f:
+                pid = int(f.read().strip())
+        except Exception:
+            return  # no pid file / unreadable
+        try:
+            args = subprocess.run(["ps", "-o", "args=", "-p", str(pid)],
+                                  capture_output=True, text=True, timeout=5).stdout
+            if "ollama" in args and "serve" in args:
+                os.kill(pid, signal.SIGTERM)
+                self.agent.console.print("[green]●[/] Ollama stopped")
+        except ProcessLookupError:
+            pass  # already gone
+        except Exception:
+            _logger.debug("ignored error stopping orphaned ollama", exc_info=True)
+        finally:
+            try:
+                os.remove(path)
+            except Exception:
+                _logger.debug("ignored error removing ollama pid file", exc_info=True)
 
     def _running_serve_bin(self):
         """Path of the `ollama serve` process currently bound to the port, or None."""
@@ -129,6 +171,220 @@ class OllamaManager:
             "runtime — install the official app from [/][cyan]https://ollama.com/download[/]"
             "[dim] (it bundles MLX) and Kodiqa will use it automatically.[/]")
 
+    def _manifest_layers(self, repo, tag, timeout):
+        """Return a registry manifest's layers list (`[]` when the manifest exists
+        but has no layers, e.g. a cloud pointer), or None when it doesn't exist."""
+        try:
+            resp = requests.get(
+                f"https://registry.ollama.ai/v2/{repo}/manifests/{tag}",
+                headers={"Accept": "application/vnd.docker.distribution.manifest.v2+json"},
+                timeout=timeout,
+            )
+            if resp.status_code != 200:
+                return None
+            return resp.json().get("layers") or []  # null/missing layers → [] (exists)
+        except Exception:
+            _logger.debug("ignored error fetching manifest", exc_info=True)
+            return None
+
+    def _tags_page_tags(self, name, timeout=8):
+        """Scrape ollama.com/library/<name>/tags → ordered list of tag strings
+        (without the 'name:' prefix). The library page lists the recommended tag
+        first. [] on failure. Used to resolve models whose registry has no
+        `latest`/`cloud` manifest (e.g. only `:8b` or a `:675b-cloud` tag)."""
+        try:
+            resp = requests.get(f"https://ollama.com/library/{name}/tags", timeout=timeout)
+            if resp.status_code != 200:
+                return []
+            found = re.findall(rf"{re.escape(name)}:([A-Za-z0-9._\-]+)", resp.text)
+        except Exception:
+            _logger.debug("ignored error fetching tags page", exc_info=True)
+            return []
+        seen, out = set(), []
+        for t in found:
+            if t not in seen:
+                seen.add(t)
+                out.append(t)
+        return out
+
+    def _registry_info(self, name, timeout=8):
+        """Inspect an Ollama model without downloading. Returns
+        (size_bytes, is_cloud, pull_name):
+          - a real GB size for normal local-weights models;
+          - (None, True, …) for cloud-hosted models (run on Ollama's servers);
+          - (None, False, name) when genuinely unknown.
+        `pull_name` is the name to actually `ollama pull` — usually the original,
+        but a resolved `<name>:<tag>` for models with no default `latest` tag."""
+        repo, tag = (name.rsplit(":", 1) + ["latest"])[:2] if ":" in name else (name, "latest")
+        if "/" not in repo:
+            repo = f"library/{repo}"
+        layers = self._manifest_layers(repo, tag, timeout)
+        if layers:  # real local weights
+            total = sum(layer.get("size", 0) for layer in layers)
+            return (total or None), False, name
+        if layers is not None:  # manifest exists but has no layers → cloud pointer
+            return None, True, name
+        if tag != "latest":
+            return None, False, name  # an explicit tag that genuinely doesn't exist
+        # Bare name with no `latest`. Cheap check: a plain `:cloud` tag in the registry.
+        if self._manifest_layers(repo, "cloud", timeout) is not None:
+            return None, True, name  # _pull_with_fallbacks handles the :cloud retry
+        # Fall back to the library tags page for non-standard tags (e.g. `675b-cloud`,
+        # or sized-only models like `granite4.1-guardian:8b`).
+        tags = self._tags_page_tags(name, timeout)
+        local = [t for t in tags if "cloud" not in t.lower()]
+        cloud = [t for t in tags if "cloud" in t.lower()]
+        if local:
+            chosen = local[0]  # the page lists the recommended/default tag first
+            sz_layers = self._manifest_layers(repo, chosen, timeout)
+            size = sum(layer.get("size", 0) for layer in sz_layers) if sz_layers else None
+            return (size or None), False, f"{name}:{chosen}"
+        if cloud:
+            return None, True, f"{name}:{cloud[0]}"  # non-standard cloud tag → resolve it
+        return None, False, name
+
+    def _registry_size(self, name, timeout=8):
+        """Convenience: just the download size in bytes (None if unknown/cloud)."""
+        return self._registry_info(name, timeout)[0]
+
+    def _registry_infos(self, names):
+        """Concurrently inspect many models (no downloads). Returns
+        {name: (size_bytes, is_cloud, pull_name)}. Used to annotate the model list."""
+        from concurrent.futures import ThreadPoolExecutor
+        out = {}
+        if not names:
+            return out
+        try:
+            with ThreadPoolExecutor(max_workers=min(24, len(names))) as ex:
+                for name, info in zip(names, ex.map(lambda n: self._registry_info(n, timeout=4), names)):
+                    out[name] = info
+        except Exception:
+            _logger.debug("ignored error in _registry_infos", exc_info=True)
+        for n in names:
+            out.setdefault(n, (None, False, n))
+        return out
+
+    @staticmethod
+    def _info_pull_name(info, fallback):
+        """The resolved pull target from a (size, is_cloud, pull_name) tuple."""
+        return info[2] if info and len(info) > 2 and info[2] else fallback
+
+    def _size_tag(self, info):
+        """Render the size/cloud annotation for a (size, is_cloud[, pull_name]) tuple."""
+        if not info:
+            return "[dim]size ?[/]"
+        size, is_cloud = info[0], info[1]
+        if size:
+            return f"[yellow]~{self._fmt_size(size)}[/]"
+        if is_cloud:
+            return "[magenta]☁ cloud[/]"
+        return "[dim]size ?[/]"
+
+    @staticmethod
+    def _fmt_size(nbytes):
+        """Human-readable size, or '?' when unknown."""
+        if not nbytes:
+            return "?"
+        if nbytes >= 1e9:
+            return f"{nbytes / 1e9:.1f} GB"
+        return f"{nbytes / 1e6:.0f} MB"
+
+    def _run_pull(self, target):
+        """Run `ollama pull target`, streaming Ollama's live progress to the
+        console while capturing the text (so callers can inspect failures).
+
+        Press Esc (confirm) or Ctrl+C (immediate) to cancel — Ollama caches the
+        partial download, so re-pulling resumes. Returns (returncode, output,
+        cancelled)."""
+        try:
+            proc = subprocess.Popen(
+                [OLLAMA_BIN, "pull", target],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                start_new_session=True,  # isolate from terminal signals; we drive cancel
+            )
+        except Exception as e:
+            _logger.debug("ignored error launching pull", exc_info=True)
+            return 1, str(e), False
+
+        chunks = []
+        cancelled = False
+        pfd = proc.stdout.fileno()
+        infd = sys.stdin.fileno()
+        old = None
+        is_tty = False
+        try:
+            is_tty = sys.stdin.isatty()
+        except Exception:
+            is_tty = False
+        if is_tty:
+            try:
+                import termios
+                import tty
+                old = termios.tcgetattr(infd)
+                tty.setcbreak(infd)
+            except Exception:
+                old = None
+
+        try:
+            import select
+            self.agent.console.print("  [dim](press Esc to cancel)[/]")
+            while True:
+                watch = [pfd] + ([infd] if old is not None else [])
+                r, _, _ = select.select(watch, [], [], 0.3)
+                if pfd in r:
+                    data = os.read(pfd, 4096)
+                    if not data:
+                        break
+                    chunks.append(data)
+                    sys.stdout.write(data.decode("utf-8", "replace"))
+                    sys.stdout.flush()
+                    continue
+                if old is not None and infd in r:
+                    ch = os.read(infd, 1)
+                    if ch in (b"\x1b", b"q"):  # Esc / q → confirm cancel
+                        sys.stdout.write("\r\n  Cancel this download? [y/N] ")
+                        sys.stdout.flush()
+                        ans = os.read(infd, 1)
+                        if ans in (b"y", b"Y"):
+                            cancelled = True
+                            break
+                        sys.stdout.write("resuming…\r\n")
+                        sys.stdout.flush()
+                if pfd not in r and proc.poll() is not None:
+                    rest = os.read(pfd, 1 << 16)
+                    if rest:
+                        chunks.append(rest)
+                        sys.stdout.write(rest.decode("utf-8", "replace"))
+                        sys.stdout.flush()
+                    break
+        except KeyboardInterrupt:
+            cancelled = True  # Ctrl+C → immediate cancel
+        finally:
+            if old is not None:
+                try:
+                    import termios
+                    termios.tcsetattr(infd, termios.TCSADRAIN, old)
+                except Exception:
+                    _logger.debug("ignored error restoring tty", exc_info=True)
+            if cancelled and proc.poll() is None:
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=5)
+                except Exception:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        _logger.debug("ignored error killing pull", exc_info=True)
+            elif proc.poll() is None:
+                proc.wait()
+            try:
+                proc.stdout.close()
+            except Exception:
+                _logger.debug("ignored error closing pull stdout", exc_info=True)
+
+        out = b"".join(chunks).decode("utf-8", "replace")
+        return (proc.returncode or 0), out, cancelled
+
     def _pull_one(self, name):
         """Pull a model, with a transparent cloud fallback.
 
@@ -137,32 +393,174 @@ class OllamaManager:
         <name>` fails with "file does not exist". When a tagless pull fails that
         way, retry as `<name>:cloud` so it installs like any other model.
 
-        Returns (ok, installed_name, detail, via_cloud).
+        Returns (ok, installed_name, detail, via_cloud). On cancellation, detail
+        is "__cancelled__".
         """
-        def _try(target):
-            try:
-                r = subprocess.run([OLLAMA_BIN, "pull", target], capture_output=True, text=True, timeout=600)
-                return r.returncode == 0, (r.stderr or "").strip()
-            except subprocess.TimeoutExpired:
-                return False, "__timeout__"
-
-        ok, err = _try(name)
-        if ok:
+        rc, out, cancelled = self._run_pull(name)
+        if cancelled:
+            return False, name, "__cancelled__", False
+        if rc == 0:
             return True, name, "", False
         # Retry cloud-only models (no explicit tag + a missing-manifest / MLX error).
-        low = err.lower()
+        low = out.lower()
         if ":" not in name and ("does not exist" in low or "manifest" in low or "mlx" in low):
             cloud = f"{name}:cloud"
             self.agent.console.print(f"  [dim]No local weights for {name} — trying cloud model [cyan]{cloud}[/][dim]...[/]")
-            ok2, err2 = _try(cloud)
-            if ok2:
+            rc2, out2, canc2 = self._run_pull(cloud)
+            if canc2:
+                return False, cloud, "__cancelled__", False
+            if rc2 == 0:
                 return True, cloud, "", True
-            err = err2 if err2 and err2 != "__timeout__" else err
-        return False, name, err, False
+            out = out2 or out
+        return False, name, out.strip(), False
+
+    def _pull_with_fallbacks(self, name):
+        """Pull `name`, escalating through every source so a model from the list
+        installs whichever way it's published:
+          1. Ollama registry (`ollama pull <name>`)
+          2. Ollama cloud (`<name>:cloud`) for cloud-hosted models
+          3. HuggingFace GGUF (`ollama pull hf.co/<repo>:<quant>`) when Ollama
+             doesn't host it but a community GGUF build exists.
+        Prints progress/results. Returns (ok, installed_name, cancelled)."""
+        ok, installed, detail, via_cloud = self._pull_one(name)
+        if ok:
+            self.agent.console.print(f"  [green]●[/] [cyan]{installed}[/] installed!")
+            if via_cloud or "cloud" in installed.lower():
+                self.agent.console.print("  [dim]Cloud model — run [/][cyan]ollama signin[/][dim] once to use it.[/]")
+            return True, installed, False
+        if detail == "__cancelled__":
+            self.agent.console.print("  [yellow]⏹ Pull cancelled.[/] [dim](partial data cached — re-pull to resume)[/]")
+            return False, name, True
+        self.agent.console.print(f"  [yellow]●[/] Not in Ollama's registry [dim]({detail[:80]})[/]")
+        # Escalate to a community GGUF build on HuggingFace.
+        ok2, installed2, canc2 = self._pull_from_huggingface(name)
+        if ok2:
+            return True, installed2, False
+        if not canc2:
+            self._maybe_mlx_hint(detail)
+        return False, name, canc2
+
+    def _pull_from_huggingface(self, name):
+        """Find `name` as a GGUF on HuggingFace and pull it via
+        `ollama pull hf.co/<repo>:<quant>`. Lists the available quants (with sizes)
+        and lets the user choose. Returns (ok, installed_name, cancelled)."""
+        self.agent.console.print(f"  [dim]Searching HuggingFace for a GGUF build of [cyan]{name}[/][dim]...[/]")
+        repos = self._hf_search_gguf(name)
+        if not repos:
+            self.agent.console.print(f"  [yellow]No GGUF build found on HuggingFace for {name}.[/]")
+            return False, name, False
+        repo_id, likes = repos[0]
+        self.agent.console.print(f"  [dim]Found [cyan]{repo_id}[/][dim] ({likes}★). Listing quants...[/]")
+        quants = self._hf_quants(repo_id)
+        if not quants:
+            self.agent.console.print(f"  [yellow]Couldn't list quant files for {repo_id}.[/]")
+            return False, name, False
+        self.agent.console.print(f"\n  [bold]Available quants for[/] [cyan]{repo_id}[/]:")
+        for i, (q, sz) in enumerate(quants, 1):
+            self.agent.console.print(f"    [cyan bold]{i}.[/] {q} [dim]({sz / 1e9:.1f} GB)[/]")
+        try:
+            ans = Prompt.ask("\n  [bold]Pull which quant?[/] [dim](number, or 'cancel')[/]", default="cancel")
+        except (EOFError, KeyboardInterrupt):
+            return False, name, True
+        ans = ans.strip().lower()
+        if not ans.isdigit() or not (1 <= int(ans) <= len(quants)):
+            self.agent.console.print("  [dim]Cancelled.[/]")
+            return False, name, False
+        quant, size = quants[int(ans) - 1]
+        target = f"hf.co/{repo_id}:{quant}"
+        self.agent.console.print(f"  [yellow]●[/] Pulling [cyan]{target}[/] [dim](~{size / 1e9:.1f} GB)[/]...")
+        rc, _out, cancelled = self._run_pull(target)
+        if cancelled:
+            self.agent.console.print("  [yellow]⏹ Pull cancelled.[/] [dim](partial data cached — re-pull to resume)[/]")
+            return False, name, True
+        if rc == 0:
+            self.agent.console.print(f"  [green]●[/] [cyan]{target}[/] installed from HuggingFace!")
+            return True, target, False
+        self.agent.console.print(f"  [red]●[/] HuggingFace pull failed (exit {rc}).")
+        return False, name, False
+
+    def _hf_search_gguf(self, name, limit=30):
+        """Search HuggingFace for GGUF repos matching `name`; return
+        [(repo_id, likes), ...] sorted by likes (most popular first)."""
+        try:
+            from urllib.parse import quote
+            resp = requests.get(
+                f"https://huggingface.co/api/models?search={quote(name)}&limit={limit}",
+                timeout=15,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception:
+            _logger.debug("ignored error in _hf_search_gguf", exc_info=True)
+            return []
+        repos = [(m.get("id", ""), m.get("likes", 0) or 0)
+                 for m in data if "gguf" in m.get("id", "").lower()]
+        repos.sort(key=lambda r: -r[1])
+        return repos
+
+    def _hf_quants(self, repo_id):
+        """Return [(quant_label, total_size_bytes), ...] for a GGUF repo, smallest
+        first. Sharded quants are summed into one entry per quant."""
+        try:
+            resp = requests.get(f"https://huggingface.co/api/models/{repo_id}?blobs=true", timeout=20)
+            resp.raise_for_status()
+            sibs = resp.json().get("siblings", [])
+        except Exception:
+            _logger.debug("ignored error in _hf_quants", exc_info=True)
+            return []
+        agg = {}
+        for s in sibs:
+            f = s.get("rfilename", "")
+            if not f.lower().endswith(".gguf"):
+                continue
+            label = self._quant_label(f)
+            agg[label] = agg.get(label, 0) + (s.get("size") or 0)
+        return sorted(agg.items(), key=lambda kv: kv[1])
+
+    @staticmethod
+    def _quant_label(path):
+        """Derive the Ollama HF tag (quantization) from a GGUF file path. Prefers a
+        Q…/IQ…/BF16/F16 token; for shard subfolders fall back to the folder name."""
+        base = os.path.basename(path)
+        base = re.sub(r"-\d{4,5}-of-\d{4,5}", "", base)  # strip shard suffix
+        stem = base[:-5] if base.lower().endswith(".gguf") else base
+        m = re.search(r"((?:UD-)?(?:I?Q\d[\w.]*|BF16|F16|F32))", stem, re.I)
+        if m:
+            return m.group(1)
+        parts = path.split("/")
+        return parts[-2] if len(parts) > 1 else stem
+
+    def unload_models(self):
+        """Free RAM on exit: Ollama keeps a model resident for `keep_alive` minutes
+        (default 5) after use, so a 10GB+ model can linger long after you quit
+        Kodiqa. This asks the server to unload every loaded model now (keep_alive=0).
+        Works regardless of who started the server; safe no-op if it's not running."""
+        try:
+            resp = requests.get(f"{OLLAMA_URL}/api/ps", timeout=2)
+            loaded = resp.json().get("models", [])
+        except Exception:
+            return  # server not running / unreachable
+        freed = 0
+        for m in loaded:
+            name = m.get("name") or m.get("model")
+            if not name:
+                continue
+            try:
+                requests.post(f"{OLLAMA_URL}/api/generate", json={"model": name, "keep_alive": 0}, timeout=5)
+                freed += 1
+            except Exception:
+                _logger.debug("ignored error unloading model", exc_info=True)
+        if freed:
+            self.agent.console.print(f"[dim]Freed {freed} loaded model(s) from RAM.[/]")
 
     def stop_ollama(self):
-        """Stop only the Ollama process WE started (don't pkill unrelated ones)."""
+        """Stop an Ollama server Kodiqa spawned (never a GUI-app/user-started one).
+        Handles both the server this session started and one a prior session left
+        running (via the pid file)."""
         if not self.agent._ollama_started_by_us:
+            # We didn't start one this session — but a previous session might have
+            # (its in-memory flag is gone). Clean that up via the recorded pid.
+            self._stop_orphaned_server()
             return
         proc = getattr(self.agent, "_ollama_proc", None)
         try:
@@ -179,6 +577,10 @@ class OllamaManager:
                 self.agent.console.print("[green]●[/] Ollama stopped")
             self.agent._ollama_started_by_us = False
             self.agent._ollama_proc = None
+            try:
+                os.remove(self._server_pid_file())
+            except Exception:
+                _logger.debug("ignored error removing ollama pid file", exc_info=True)
         except Exception:
             _logger.debug("ignored error in stop_ollama", exc_info=True)
 
@@ -217,8 +619,107 @@ class OllamaManager:
             if not already_have:
                 models.append((name, desc, pulls))
 
-        # Return top 100 by popularity (page is already sorted by pulls)
-        return models[:100]
+        # Return all available (page is already sorted by pulls); the caller paginates.
+        return models[:300]
+
+    def _choose_models(self, new_models, page_size=100):
+        """Paginated picker for the 'new models' list. Shows a page at a time with
+        each model's size (or ☁ cloud), supports 'next'/'prev', numbers (global,
+        across pages), names, and 'all'; then a y/n/skip confirm where 'n' returns
+        to the picker. Sizes are fetched lazily per page and cached (no downloads).
+        Returns the confirmed list of resolved pull-names (which may include a
+        resolved `:tag` for sized/cloud models), or None to skip/cancel."""
+        info_cache = {}
+        last_page = (len(new_models) - 1) // page_size
+
+        def _ensure_sizes(names):
+            todo = [n for n in names if n not in info_cache]
+            if todo:
+                with Status("[dim]Fetching model sizes...[/]", console=self.agent.console, spinner="dots"):
+                    info_cache.update(self._registry_infos(todo))
+
+        page = 0
+        while True:
+            start = page * page_size
+            page_models = new_models[start:start + page_size]
+            _ensure_sizes([m for m, _, _ in page_models])
+
+            page_label = f" [dim](page {page + 1}/{last_page + 1})[/]" if last_page else ""
+            self.agent.console.print(
+                f"\n[bold yellow]New models {start + 1}–{start + len(page_models)} of {len(new_models)}[/]"
+                f"{page_label} [dim](most popular on ollama.com/library)[/]:")
+            for offset, (model, desc, pulls) in enumerate(page_models):
+                gidx = start + offset + 1
+                pulls_str = f" [dim]({pulls} pulls)[/]" if pulls else ""
+                self.agent.console.print(f"  [cyan bold]{gidx}.[/] [cyan]{model}[/] — {desc[:60]}{pulls_str} {self._size_tag(info_cache.get(model))}")
+            self.agent.console.print("  [dim]☁ cloud = runs on Ollama's servers (no local download; needs `ollama signin`)[/]")
+
+            nav = (["'next'"] if page < last_page else []) + (["'prev'"] if page > 0 else [])
+            nav_str = (", " + ", ".join(nav)) if nav else ""
+            try:
+                answer = Prompt.ask(
+                    f"\n[bold]Pull new models?[/] [dim](enter numbers, 'all'{nav_str}, or 'skip')[/]",
+                    default="skip",
+                )
+            except (EOFError, KeyboardInterrupt):
+                return None
+            a = answer.strip().lower()
+            if a in ("skip", ""):
+                return None
+            if a in ("next", ">"):
+                if page < last_page:
+                    page += 1
+                else:
+                    self.agent.console.print("[dim]Already on the last page.[/]")
+                continue
+            if a in ("prev", "<"):
+                page = max(0, page - 1)
+                continue
+
+            to_pull = []
+            if a == "all":
+                to_pull = [m for m, _, _ in new_models]
+            else:
+                for part in answer.replace(",", " ").split():
+                    try:
+                        idx = int(part) - 1
+                        if 0 <= idx < len(new_models):
+                            to_pull.append(new_models[idx][0])
+                    except ValueError:
+                        # Maybe they typed a model name (require 3+ chars to avoid accidental matches)
+                        if len(part) >= 3:
+                            for model, _, _ in new_models:
+                                if part.lower() in model.lower():
+                                    to_pull.append(model)
+                                    break
+            to_pull = list(dict.fromkeys(to_pull))  # dedupe, keep order
+            if not to_pull:
+                self.agent.console.print("[dim]Didn't recognize that — use numbers from the list, 'all', 'next', or 'skip'.[/]")
+                continue
+
+            # Show the selection with sizes/cloud + total (fetch any not yet cached,
+            # e.g. numbers typed referencing a page you didn't open). Display and
+            # pull the *resolved* name (may carry a :tag for sized/cloud models).
+            _ensure_sizes(to_pull)
+            resolved = [self._info_pull_name(info_cache.get(m), m) for m in to_pull]
+            total = sum((info_cache.get(m) or (None, False, m))[0] or 0 for m in to_pull)
+            self.agent.console.print("\n[bold]Selected:[/]")
+            for m, pull_name in zip(to_pull, resolved):
+                self.agent.console.print(f"  [cyan]{pull_name}[/] {self._size_tag(info_cache.get(m))}")
+            if total:
+                self.agent.console.print(f"  [bold]Total: ~{self._fmt_size(total)}[/]")
+            try:
+                confirm = Prompt.ask(
+                    "\n[bold]Download these?[/] [dim](y = download, n = pick again, skip = cancel)[/]",
+                    choices=["y", "n", "skip"], default="y",
+                )
+            except (EOFError, KeyboardInterrupt):
+                return None
+            if confirm == "skip":
+                return None
+            if confirm == "n":
+                continue  # back to the pick prompt
+            return resolved  # y → proceed (resolved pull-names)
 
     def check_updates(self, show_welcome=True):
         """Check for model updates and new models on startup.
@@ -305,42 +806,7 @@ class OllamaManager:
         if not new_models:
             return
 
-        # Show new models available
-        self.agent.console.print(f"\n[bold yellow]Top {len(new_models)} new models available[/] [dim](most popular on ollama.com/library)[/]:")
-        for i, (model, desc, pulls) in enumerate(new_models, 1):
-            pulls_str = f" [dim]({pulls} pulls)[/]" if pulls else ""
-            self.agent.console.print(f"  [cyan bold]{i}.[/] [cyan]{model}[/] — {desc[:70]}{pulls_str}")
-
-        try:
-            answer = Prompt.ask(
-                "\n[bold]Pull new models?[/] [dim](enter numbers, 'all', or 'skip')[/]",
-                default="skip"
-            )
-        except (EOFError, KeyboardInterrupt):
-            return
-
-        if answer.strip().lower() == "skip":
-            return
-
-        to_pull = []
-        if answer.strip().lower() == "all":
-            to_pull = [m for m, _, _ in new_models]
-        else:
-            # Parse numbers or model names
-            parts = answer.replace(",", " ").split()
-            for part in parts:
-                try:
-                    idx = int(part) - 1
-                    if 0 <= idx < len(new_models):
-                        to_pull.append(new_models[idx][0])
-                except ValueError:
-                    # Maybe they typed a model name (require 3+ chars to avoid accidental matches)
-                    if len(part) >= 3:
-                        for model, _, _ in new_models:
-                            if part.lower() in model.lower():
-                                to_pull.append(model)
-                                break
-
+        to_pull = self._choose_models(new_models)
         if not to_pull:
             return
 
@@ -348,22 +814,17 @@ class OllamaManager:
         for model in to_pull:
             self.agent.console.print(f"\n  [yellow]●[/] Pulling [cyan]{model}[/]...")
             try:
-                ok, name, detail, via_cloud = self._pull_one(model)
+                ok, name, cancelled = self._pull_with_fallbacks(model)
             except Exception as e:
                 self.agent.console.print(f"  [red]●[/] Error: {e}")
                 continue
             if ok:
                 installed_names.append(name)
-                self.agent.console.print(f"  [green]●[/] [cyan]{name}[/] installed!")
-                if via_cloud:
-                    self.agent.console.print("  [dim]Cloud model — run [/][cyan]ollama signin[/][dim] once to use it.[/]")
-            elif detail == "__timeout__":
-                self.agent.console.print(f"  [red]●[/] Timeout pulling {model}")
-            else:
-                self.agent.console.print(f"  [red]●[/] Failed to pull {model}: {detail[:100]}")
-                self._maybe_mlx_hint(detail)
+            if cancelled:
+                self.agent.console.print("[dim]Stopped remaining downloads.[/]")
+                break
 
-        self.agent.console.print(f"\n[green]Models pulled! Use /multi all for multi-model mode.[/]")
+        self.agent.console.print(f"\n[green]Done. Use /multi all for multi-model mode.[/]")
         # Auto-set model if current one wasn't installed (use the name that actually
         # installed — may be the :cloud variant).
         if not installed and installed_names:
@@ -390,22 +851,18 @@ class OllamaManager:
             self.agent.console.print("[yellow]Usage: /pull <model>[/] [dim](e.g. /pull llama3.2)[/]")
             return
         for name in arg.replace(",", " ").split():
-            self.agent.console.print(f"\n  [yellow]●[/] Pulling [cyan]{name}[/]...")
+            info = self._registry_info(name)
+            target = self._info_pull_name(info, name)  # resolve :tag for sized/cloud models
+            self.agent.console.print(f"\n  [yellow]●[/] Pulling [cyan]{target}[/] {self._size_tag(info)}...")
             try:
-                ok, installed_name, detail, via_cloud = self._pull_one(name)
+                ok, _installed, cancelled = self._pull_with_fallbacks(target)
             except Exception as e:
                 self.agent.console.print(f"  [red]●[/] Error: {e}")
                 continue
             if ok:
-                self.agent.console.print(f"  [green]●[/] [cyan]{installed_name}[/] installed!")
-                if via_cloud:
-                    self.agent.console.print("  [dim]Cloud model — run [/][cyan]ollama signin[/][dim] once to use it.[/]")
                 self.agent._invalidate_model_cache()
-            elif detail == "__timeout__":
-                self.agent.console.print(f"  [red]●[/] Timeout pulling {name}")
-            else:
-                self.agent.console.print(f"  [red]●[/] Failed to pull {name}: {detail[:120]}")
-                self._maybe_mlx_hint(detail)
+            if cancelled:
+                break
 
     def delete_model(self, arg):
         """Delete one or more locally downloaded Ollama models (frees disk)."""

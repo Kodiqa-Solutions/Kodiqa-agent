@@ -1196,6 +1196,11 @@ class Kodiqa:
         self._watchers.clear()
         self.memory.close()
         self.mcp.stop_all()
+        if self.config.get("unload_ollama_on_exit", True):
+            try:
+                self.ollama.unload_models()  # free the model's RAM (keep_alive=0)
+            except Exception:
+                _logger.debug("ignored error unloading ollama models on quit", exc_info=True)
         self._stop_ollama()
         self.console.print("[dim]Goodbye! Session saved.[/]")
 
@@ -1284,6 +1289,11 @@ class Kodiqa:
             if getattr(self, "_lsp_client", None):
                 self._lsp_client.stop()
                 self._lsp_client = None
+        except Exception:
+            _logger.debug("ignored error in _cleanup_children", exc_info=True)
+        try:
+            if self.config.get("unload_ollama_on_exit", True):
+                self.ollama.unload_models()  # free the model's RAM (keep_alive=0)
         except Exception:
             _logger.debug("ignored error in _cleanup_children", exc_info=True)
         try:

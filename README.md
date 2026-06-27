@@ -14,7 +14,7 @@
   <a href="#install"><img src="https://img.shields.io/badge/python-3.9+-blue?logo=python&logoColor=white" alt="Python 3.9+"/></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-purple" alt="License"/></a>
   <a href="https://github.com/Kodiqa-Solutions/Kodiqa-agent/actions/workflows/ci.yml"><img src="https://github.com/Kodiqa-Solutions/Kodiqa-agent/actions/workflows/ci.yml/badge.svg" alt="CI"/></a>
-  <a href="#testing"><img src="https://img.shields.io/badge/tests-487%20passing-brightgreen" alt="Tests"/></a>
+  <a href="#testing"><img src="https://img.shields.io/badge/tests-527%20passing-brightgreen" alt="Tests"/></a>
   <a href="#api-setup"><img src="https://img.shields.io/badge/providers-7-cyan" alt="7 Providers"/></a>
   <a href="#26-tools"><img src="https://img.shields.io/badge/commands-78-orange" alt="78 Commands"/></a>
 </p>
@@ -67,7 +67,7 @@
 | **Desktop app / IDE** | Editor bridge (`--serve`) | Yes (VS Code) | No | No | Yes (VS Code, desktop) |
 | **Install** | `pip install kodiqa` | `npm install -g` | `pip install` | `npm install -g` | `go install` / `npm` |
 | **Language** | Python | TypeScript | Python | TypeScript | Go |
-| **Tests** | 487 | Yes | Yes | Yes | Yes |
+| **Tests** | 527 | Yes | Yes | Yes | Yes |
 | **Open source** | Yes (AGPL-3.0) | Yes (Apache-2.0) | Yes (Apache-2.0) | Yes (Apache-2.0) | Yes (MIT) |
 
 **Kodiqa's unique advantages**: free local models, 7 API providers, multi-model consensus, custom plugins, sub-agents, LSP integration, 5 themes, project templates, batch edit review, conversation branching, budget limits, auto-lint, and auto model discovery — features no other agent offers together.

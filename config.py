@@ -312,6 +312,11 @@ PERSONAS = {
 # ── Changelog ──
 # Canonical changelog is CHANGELOG.md — this list powers the /changelog command
 CHANGELOG = [
+    {"version": "v3.17.0", "date": "2026-06-27", "changes": [
+        "HuggingFace GGUF fallback: when a model isn't in Ollama's registry (or cloud), Kodiqa searches HuggingFace for a community GGUF build, lists the quant levels with sizes to choose from, and installs it via 'ollama pull hf.co/<repo>:<quant>'. Escalation per model: Ollama registry -> :cloud -> HuggingFace.",
+        "Pulls now show live progress, list each model's download size (or a cloud label, resolving non-standard/sized-only tags via the library tags page) next to its pull count, paginate the full model list (next/prev), let you say 'n' to pick a different model (pick-again loop), and can be cancelled mid-download with Esc (confirm) or Ctrl+C.",
+        "Fix: free Ollama model RAM on exit (unload loaded models / keep_alive=0) and stop a Kodiqa-spawned server even across sessions (pid file) — a 10GB+ model no longer lingers after you quit.",
+    ]},
     {"version": "v3.16.3", "date": "2026-06-27", "changes": [
         "Pull MLX models like any other: Kodiqa prefers the MLX-capable macOS Ollama app build and restarts a non-MLX (e.g. Homebrew) server in place so MLX-format models stop failing with 'failed to load MLX dynamic library'.",
         "Cloud-only models (glm-5.1, glm-5.2, …) now install: a bare pull that has no local weights is retried automatically as <name>:cloud (run 'ollama signin' once to use it).",
