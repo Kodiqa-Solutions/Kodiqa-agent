@@ -4,6 +4,17 @@ All notable changes to Kodiqa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.16.3] - 2026-06-27
+
+Pull any model from the list — including MLX and cloud-hosted models.
+
+### Fixed
+- **MLX models now pull like any other.** Models published in Apple's MLX format (e.g. GLM) failed with `failed to load MLX dynamic library` when the running Ollama server was a Homebrew build (which doesn't ship the MLX runtime). Kodiqa now prefers the official macOS app build (which bundles MLX) for `OLLAMA_BIN`, and if a non-MLX server is already running it transparently restarts it with the MLX-capable build.
+- **Cloud-hosted models now install instead of erroring.** Newer models like `glm-5.1` / `glm-5.2` are published cloud-only (they expose just a `:cloud` tag, no local weights), so a bare `ollama pull glm-5.1` failed with "file does not exist". Kodiqa now detects this and transparently retries as `<name>:cloud`, then reminds you to run `ollama signin` once to use it.
+
+### Tests
+- `test_ollama_pull.py` — MLX detection, binary resolution preferring the MLX build, the `:cloud` pull fallback, and the in-place MLX server restart decision. 487 total.
+
 ## [3.16.2] - 2026-06-06
 
 ### Fixed

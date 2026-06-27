@@ -7,6 +7,7 @@ process WE spawned), the startup update check, and the local-model operations
 reads it via the back-reference. Kodiqa keeps thin wrappers so call sites are unchanged.
 """
 
+import os
 import re
 import subprocess
 import time
@@ -16,7 +17,7 @@ from bs4 import BeautifulSoup
 from rich.prompt import Prompt
 from rich.status import Status
 
-from config import OLLAMA_URL, OLLAMA_BIN, save_settings
+from config import OLLAMA_URL, OLLAMA_BIN, OLLAMA_APP_BIN, ollama_bin_has_mlx, save_settings
 
 import logging
 _logger = logging.getLogger("kodiqa")
@@ -27,36 +28,137 @@ class OllamaManager:
         self.agent = agent
 
     def ensure_ollama(self):
-        """Make sure Ollama is running, start it if not."""
-        import time
+        """Make sure Ollama is running, start it if not.
+
+        If a server is already up but can't load MLX (e.g. a Homebrew `ollama`),
+        and we have an MLX-capable build available, transparently restart it with
+        that build so MLX-format models (glm-5.1, …) pull and run like any other.
+        """
         try:
             requests.get(f"{OLLAMA_URL}/api/tags", timeout=3)
+            self._ensure_mlx_server()  # upgrade a non-MLX server in place if we can
             return True  # Already running
         except Exception:
             _logger.debug("ignored error in ensure_ollama", exc_info=True)
-        # Try to start Ollama
+        # Try to start Ollama (OLLAMA_BIN already prefers the MLX-capable build)
         self.agent.console.print("[dim]Starting Ollama...[/]")
+        if self._spawn_serve():
+            self.agent.console.print("[green]●[/] Ollama started")
+            return True
+        self.agent.console.print("[yellow]●[/] Could not start Ollama [dim](start manually: ollama serve)[/]")
+        return False
+
+    def _spawn_serve(self):
+        """Start `OLLAMA_BIN serve` and wait (up to 10s) until it answers. Tracks
+        the process we spawned for clean shutdown. Returns True on success."""
         try:
             proc = subprocess.Popen(
                 [OLLAMA_BIN, "serve"],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
-            # Wait for it to be ready (up to 10s)
-            for _ in range(20):
-                time.sleep(0.5)
-                try:
-                    requests.get(f"{OLLAMA_URL}/api/tags", timeout=2)
-                    self.agent.console.print("[green]●[/] Ollama started")
-                    self.agent._ollama_started_by_us = True
-                    self.agent._ollama_proc = proc  # track OUR process for clean shutdown
-                    return True
-                except Exception:
-                    continue
         except Exception:
-            _logger.debug("ignored error in ensure_ollama", exc_info=True)
-        self.agent.console.print("[yellow]●[/] Could not start Ollama [dim](start manually: ollama serve)[/]")
+            _logger.debug("ignored error in _spawn_serve", exc_info=True)
+            return False
+        for _ in range(20):
+            time.sleep(0.5)
+            try:
+                requests.get(f"{OLLAMA_URL}/api/tags", timeout=2)
+                self.agent._ollama_started_by_us = True
+                self.agent._ollama_proc = proc  # track OUR process for clean shutdown
+                return True
+            except Exception:
+                continue
         return False
+
+    def _running_serve_bin(self):
+        """Path of the `ollama serve` process currently bound to the port, or None."""
+        try:
+            out = subprocess.run(["ps", "-Ao", "args="], capture_output=True, text=True, timeout=5).stdout
+        except Exception:
+            _logger.debug("ignored error in _running_serve_bin", exc_info=True)
+            return None
+        for line in out.splitlines():
+            line = line.strip()
+            if not line or " serve" not in line:
+                continue
+            first = line.split()[0]
+            if os.path.basename(first) == "ollama" or "/ollama" in first:
+                return first
+        return None
+
+    def _ensure_mlx_server(self):
+        """If the running server can't load MLX but we have an MLX-capable build,
+        restart it with that build. macOS-only in practice (libmlx ships only with
+        the Mac app); a no-op when already MLX-capable or no MLX build exists."""
+        if not ollama_bin_has_mlx(OLLAMA_BIN):
+            return  # nothing better to offer (e.g. Linux, or only Homebrew installed)
+        running = self._running_serve_bin()
+        if running and ollama_bin_has_mlx(running):
+            return  # already serving from an MLX-capable build
+        self.agent.console.print(
+            "[dim]Switching Ollama to the MLX-capable build "
+            "(so models like glm-5.1 install like any other)...[/]")
+        # Stop whatever is on the port, then start the MLX build in its place.
+        try:
+            subprocess.run(["pkill", "-f", "ollama serve"], capture_output=True, timeout=5)
+        except Exception:
+            _logger.debug("ignored error stopping non-MLX ollama", exc_info=True)
+        for _ in range(12):  # wait for the port to free (up to ~3.6s)
+            time.sleep(0.3)
+            try:
+                requests.get(f"{OLLAMA_URL}/api/tags", timeout=1)
+            except Exception:
+                break
+        if self._spawn_serve():
+            self.agent.console.print("[green]●[/] Ollama (MLX) ready")
+        else:
+            self.agent.console.print("[yellow]●[/] Could not start the MLX build [dim](models needing MLX may fail)[/]")
+
+    def _maybe_mlx_hint(self, stderr):
+        """When a pull fails because the server can't load MLX and we have no
+        MLX-capable build to switch to, point the user at the fix (the Mac app)."""
+        if not stderr or "mlx" not in stderr.lower():
+            return
+        if ollama_bin_has_mlx(OLLAMA_BIN) or os.path.exists(OLLAMA_APP_BIN):
+            # We have (or just used) an MLX build — restart should have handled it;
+            # don't muddy the output with install advice.
+            return
+        self.agent.console.print(
+            "  [dim]This is an MLX-format model. The Homebrew `ollama` lacks the MLX "
+            "runtime — install the official app from [/][cyan]https://ollama.com/download[/]"
+            "[dim] (it bundles MLX) and Kodiqa will use it automatically.[/]")
+
+    def _pull_one(self, name):
+        """Pull a model, with a transparent cloud fallback.
+
+        Many newer models (glm-5.1, glm-5.2, …) are published cloud-hosted: they
+        have no local-weights tag, only `<name>:cloud`, so a bare `ollama pull
+        <name>` fails with "file does not exist". When a tagless pull fails that
+        way, retry as `<name>:cloud` so it installs like any other model.
+
+        Returns (ok, installed_name, detail, via_cloud).
+        """
+        def _try(target):
+            try:
+                r = subprocess.run([OLLAMA_BIN, "pull", target], capture_output=True, text=True, timeout=600)
+                return r.returncode == 0, (r.stderr or "").strip()
+            except subprocess.TimeoutExpired:
+                return False, "__timeout__"
+
+        ok, err = _try(name)
+        if ok:
+            return True, name, "", False
+        # Retry cloud-only models (no explicit tag + a missing-manifest / MLX error).
+        low = err.lower()
+        if ":" not in name and ("does not exist" in low or "manifest" in low or "mlx" in low):
+            cloud = f"{name}:cloud"
+            self.agent.console.print(f"  [dim]No local weights for {name} — trying cloud model [cyan]{cloud}[/][dim]...[/]")
+            ok2, err2 = _try(cloud)
+            if ok2:
+                return True, cloud, "", True
+            err = err2 if err2 and err2 != "__timeout__" else err
+        return False, name, err, False
 
     def stop_ollama(self):
         """Stop only the Ollama process WE started (don't pkill unrelated ones)."""
@@ -242,26 +344,30 @@ class OllamaManager:
         if not to_pull:
             return
 
+        installed_names = []
         for model in to_pull:
             self.agent.console.print(f"\n  [yellow]●[/] Pulling [cyan]{model}[/]...")
             try:
-                result = subprocess.run(
-                    [OLLAMA_BIN, "pull", model],
-                    capture_output=True, text=True, timeout=600,
-                )
-                if result.returncode == 0:
-                    self.agent.console.print(f"  [green]●[/] [cyan]{model}[/] installed!")
-                else:
-                    self.agent.console.print(f"  [red]●[/] Failed to pull {model}: {result.stderr[:100]}")
-            except subprocess.TimeoutExpired:
-                self.agent.console.print(f"  [red]●[/] Timeout pulling {model}")
+                ok, name, detail, via_cloud = self._pull_one(model)
             except Exception as e:
                 self.agent.console.print(f"  [red]●[/] Error: {e}")
+                continue
+            if ok:
+                installed_names.append(name)
+                self.agent.console.print(f"  [green]●[/] [cyan]{name}[/] installed!")
+                if via_cloud:
+                    self.agent.console.print("  [dim]Cloud model — run [/][cyan]ollama signin[/][dim] once to use it.[/]")
+            elif detail == "__timeout__":
+                self.agent.console.print(f"  [red]●[/] Timeout pulling {model}")
+            else:
+                self.agent.console.print(f"  [red]●[/] Failed to pull {model}: {detail[:100]}")
+                self._maybe_mlx_hint(detail)
 
         self.agent.console.print(f"\n[green]Models pulled! Use /multi all for multi-model mode.[/]")
-        # Auto-set model if current one wasn't installed
-        if not installed and to_pull:
-            self.agent.model = to_pull[0]
+        # Auto-set model if current one wasn't installed (use the name that actually
+        # installed — may be the :cloud variant).
+        if not installed and installed_names:
+            self.agent.model = installed_names[0]
             self.agent.console.print(f"Model set to [cyan]{self.agent.model}[/]")
 
     def installed_ollama_models(self):
@@ -286,16 +392,20 @@ class OllamaManager:
         for name in arg.replace(",", " ").split():
             self.agent.console.print(f"\n  [yellow]●[/] Pulling [cyan]{name}[/]...")
             try:
-                result = subprocess.run([OLLAMA_BIN, "pull", name], capture_output=True, text=True, timeout=600)
-                if result.returncode == 0:
-                    self.agent.console.print(f"  [green]●[/] [cyan]{name}[/] installed!")
-                    self.agent._invalidate_model_cache()
-                else:
-                    self.agent.console.print(f"  [red]●[/] Failed to pull {name}: {(result.stderr or '').strip()[:120]}")
-            except subprocess.TimeoutExpired:
-                self.agent.console.print(f"  [red]●[/] Timeout pulling {name}")
+                ok, installed_name, detail, via_cloud = self._pull_one(name)
             except Exception as e:
                 self.agent.console.print(f"  [red]●[/] Error: {e}")
+                continue
+            if ok:
+                self.agent.console.print(f"  [green]●[/] [cyan]{installed_name}[/] installed!")
+                if via_cloud:
+                    self.agent.console.print("  [dim]Cloud model — run [/][cyan]ollama signin[/][dim] once to use it.[/]")
+                self.agent._invalidate_model_cache()
+            elif detail == "__timeout__":
+                self.agent.console.print(f"  [red]●[/] Timeout pulling {name}")
+            else:
+                self.agent.console.print(f"  [red]●[/] Failed to pull {name}: {detail[:120]}")
+                self._maybe_mlx_hint(detail)
 
     def delete_model(self, arg):
         """Delete one or more locally downloaded Ollama models (frees disk)."""

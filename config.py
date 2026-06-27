@@ -12,13 +12,42 @@ _logger = logging.getLogger("kodiqa")
 _logger.addHandler(logging.NullHandler())
 
 OLLAMA_URL = "http://localhost:11434"
-# Resolve the ollama binary cross-platform: explicit env override, then PATH, then
-# the macOS app bundle as a last resort. (Hardcoding the .app path broke Linux/Windows.)
-OLLAMA_BIN = (
-    os.environ.get("OLLAMA_BIN")
-    or shutil.which("ollama")
-    or "/Applications/Ollama.app/Contents/Resources/ollama"
-)
+
+# The official macOS Ollama.app build bundles the MLX runtime (libmlx.dylib) next
+# to its binary, so MLX-format models (e.g. glm-5.1) can be pulled and run. A
+# Homebrew `ollama` on PATH does NOT ship MLX, so those pulls fail with
+# "failed to load MLX dynamic library".
+OLLAMA_APP_BIN = "/Applications/Ollama.app/Contents/Resources/ollama"
+
+
+def ollama_bin_has_mlx(bin_path):
+    """True if the MLX dynamic library sits next to this ollama binary."""
+    if not bin_path:
+        return False
+    try:
+        d = os.path.dirname(os.path.realpath(bin_path))
+    except Exception:
+        return False
+    return os.path.exists(os.path.join(d, "libmlx.dylib"))
+
+
+def resolve_ollama_bin():
+    """Resolve the ollama binary cross-platform.
+
+    Order: explicit ``$OLLAMA_BIN`` override → the macOS app build *when it ships
+    MLX* (so models like glm-5.1 pull/run like any other) → PATH → app build →
+    bare name. Preferring the MLX-capable app build over a Homebrew ollama is what
+    lets MLX models install instead of failing to load the MLX library.
+    """
+    env = os.environ.get("OLLAMA_BIN")
+    if env:
+        return env
+    if ollama_bin_has_mlx(OLLAMA_APP_BIN):
+        return OLLAMA_APP_BIN
+    return shutil.which("ollama") or (OLLAMA_APP_BIN if os.path.exists(OLLAMA_APP_BIN) else "ollama")
+
+
+OLLAMA_BIN = resolve_ollama_bin()
 DEFAULT_MODEL = "qwen3-coder"
 
 # Local Ollama models
@@ -283,6 +312,10 @@ PERSONAS = {
 # ── Changelog ──
 # Canonical changelog is CHANGELOG.md — this list powers the /changelog command
 CHANGELOG = [
+    {"version": "v3.16.3", "date": "2026-06-27", "changes": [
+        "Pull MLX models like any other: Kodiqa prefers the MLX-capable macOS Ollama app build and restarts a non-MLX (e.g. Homebrew) server in place so MLX-format models stop failing with 'failed to load MLX dynamic library'.",
+        "Cloud-only models (glm-5.1, glm-5.2, …) now install: a bare pull that has no local weights is retried automatically as <name>:cloud (run 'ollama signin' once to use it).",
+    ]},
     {"version": "v3.16.2", "date": "2026-06-06", "changes": [
         "Fix: a failed request (e.g. 404 for an unavailable model) no longer crashes the CLI — _stream_interrupted is initialized at startup, and the REPL now catches any per-input error, logs it, and returns to the prompt instead of exiting.",
     ]},
