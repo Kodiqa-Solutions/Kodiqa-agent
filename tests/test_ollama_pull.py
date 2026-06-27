@@ -203,7 +203,9 @@ class TestPullWithFallbacks:
 
 class TestPullFromHuggingface:
     def _mgr(self):
-        return OllamaManager(MagicMock())
+        agent = MagicMock()
+        agent._mem_budget = (0, "")  # no budget → fit markers are empty in the quant list
+        return OllamaManager(agent)
 
     def test_user_picks_quant_and_pulls(self, monkeypatch):
         m = self._mgr()
@@ -340,7 +342,9 @@ class TestChooseModels:
     """The paginated 'new models' picker (_choose_models)."""
 
     def _mgr(self, infos=None):
-        m = OllamaManager(MagicMock())
+        agent = MagicMock()
+        agent._mem_budget = (0, "")  # no budget → skip fit annotations in the picker
+        m = OllamaManager(agent)
         m._registry_infos = lambda names: (infos if infos is not None
                                            else {n: (1_000_000_000, False, n) for n in names})
         return m
@@ -456,6 +460,51 @@ class TestUnloadAndShutdown:
         m._stop_orphaned_server()
         assert killed == []
         assert not pidfile.exists()
+
+
+class TestFitRecommender:
+    """Phase 2: 'fits my machine' memory budget + fit/quality markers."""
+
+    def _mgr(self, budget_bytes):
+        agent = MagicMock()
+        agent._mem_budget = (budget_bytes, "RAM")  # pre-seed the cache
+        return OllamaManager(agent)
+
+    def test_fit_marker_boundaries(self):
+        GB = 1024 ** 3
+        m = self._mgr(20 * GB)  # reserve is 2GB → fits ≤18, tight ≤20, else too big
+        assert "fits" in m._fit_marker(10 * GB)
+        assert "tight" in m._fit_marker(19 * GB)
+        assert "too big" in m._fit_marker(25 * GB)
+
+    def test_fit_marker_empty_when_unknown(self):
+        assert self._mgr(0)._fit_marker(5 * 1024 ** 3) == ""      # no budget
+        assert self._mgr(20 * 1024 ** 3)._fit_marker(None) == ""  # no size
+
+    def test_memory_budget_prefers_vram(self):
+        agent = MagicMock()
+        agent._mem_budget = None
+        m = OllamaManager(agent)
+        m._nvidia_vram_bytes = lambda: 24 * 1024 ** 3
+        m._total_ram_bytes = lambda: 64 * 1024 ** 3
+        budget, label = m._memory_budget()
+        assert label == "VRAM" and budget == int(24 * 1024 ** 3 * 0.92)
+
+    def test_memory_budget_falls_back_to_ram(self):
+        agent = MagicMock()
+        agent._mem_budget = None
+        m = OllamaManager(agent)
+        m._nvidia_vram_bytes = lambda: None
+        m._total_ram_bytes = lambda: 32 * 1024 ** 3
+        budget, label = m._memory_budget()
+        assert budget == int(32 * 1024 ** 3 * 0.72) and label in ("RAM", "unified RAM")
+
+    def test_coding_warn_flags_sub_4bit(self):
+        m = OllamaManager(MagicMock())
+        for q in ["IQ1_S", "IQ2_M", "IQ3_XXS", "Q2_K", "Q3_K_M", "UD-Q3_K_XL"]:
+            assert "low-bit" in m._coding_quality_warn(q), q
+        for q in ["Q4_K_M", "IQ4_XS", "Q5_K_M", "Q6_K", "Q8_0", "UD-Q4_K_XL"]:
+            assert m._coding_quality_warn(q) == "", q
 
 
 class TestServeEnv:

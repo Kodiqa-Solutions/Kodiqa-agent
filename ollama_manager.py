@@ -317,6 +317,72 @@ class OllamaManager:
             return f"{nbytes / 1e9:.1f} GB"
         return f"{nbytes / 1e6:.0f} MB"
 
+    # ── "Fits my machine" (Phase 2) ──────────────────────────────────────────
+    def _total_ram_bytes(self):
+        """Physical RAM in bytes (works on macOS + Linux), or None."""
+        try:
+            return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+        except Exception:
+            _logger.debug("ignored error reading total RAM", exc_info=True)
+            return None
+
+    def _nvidia_vram_bytes(self):
+        """Total VRAM of the first NVIDIA GPU in bytes, or None if no nvidia-smi."""
+        try:
+            out = subprocess.run(
+                ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=5,
+            ).stdout.strip().splitlines()
+            if out:
+                return int(float(out[0].strip())) * 1024 * 1024  # MiB → bytes
+        except Exception:
+            _logger.debug("ignored error reading nvidia vram", exc_info=True)
+        return None
+
+    def _memory_budget(self):
+        """(usable_bytes, label) — memory a model + its KV cache can realistically
+        use. Prefers NVIDIA VRAM; else system RAM (Apple Silicon shares one pool).
+        A fraction is reserved for the OS / other apps. Cached per session."""
+        cached = getattr(self.agent, "_mem_budget", None)
+        if cached is not None:
+            return cached
+        vram = self._nvidia_vram_bytes()
+        if vram:
+            budget = (int(vram * 0.92), "VRAM")
+        else:
+            total = self._total_ram_bytes()
+            if total:
+                label = "unified RAM" if sys.platform == "darwin" else "RAM"
+                budget = (int(total * 0.72), label)  # leave room for OS/other apps
+            else:
+                budget = (0, "")
+        self.agent._mem_budget = budget
+        return budget
+
+    def _fit_marker(self, size_bytes):
+        """✓ fits / ⚠ tight / ✗ too big for the detected memory budget. Reserves
+        ~2GB for KV cache (at moderate context, with q8_0 KV) + runtime overhead.
+        Empty string when size or budget is unknown."""
+        budget, _label = self._memory_budget()
+        if not size_bytes or not budget:
+            return ""
+        reserve = 2 * 1024 ** 3
+        if size_bytes <= budget - reserve:
+            return "[green]✓ fits[/]"
+        if size_bytes <= budget:
+            return "[yellow]⚠ tight[/]"
+        return "[red]✗ too big[/]"
+
+    @staticmethod
+    def _coding_quality_warn(quant):
+        """A '(low-bit — may hurt coding)' note for sub-4-bit quants, else ''.
+        Coding stays reliable down to ~4-bit; 3/2/1-bit degrade (esp. on smaller
+        models)."""
+        q = (quant or "").lower()
+        if re.search(r"(iq1|iq2|iq3|q2_k|q3_k)", q) or re.search(r"[0-3]\.\d+bpw", q):
+            return " [dim](low-bit — may hurt coding)[/]"
+        return ""
+
     def _run_pull(self, target):
         """Run `ollama pull target`, streaming Ollama's live progress to the
         console while capturing the text (so callers can inspect failures).
@@ -485,7 +551,9 @@ class OllamaManager:
             return False, name, False
         self.agent.console.print(f"\n  [bold]Available quants for[/] [cyan]{repo_id}[/]:")
         for i, (q, sz) in enumerate(quants, 1):
-            self.agent.console.print(f"    [cyan bold]{i}.[/] {q} [dim]({sz / 1e9:.1f} GB)[/]")
+            fit = self._fit_marker(sz)
+            warn = self._coding_quality_warn(q)
+            self.agent.console.print(f"    [cyan bold]{i}.[/] {q} [dim]({sz / 1e9:.1f} GB)[/] {fit}{warn}")
         try:
             ans = Prompt.ask("\n  [bold]Pull which quant?[/] [dim](number, or 'cancel')[/]", default="cancel")
         except (EOFError, KeyboardInterrupt):
@@ -659,6 +727,7 @@ class OllamaManager:
         resolved `:tag` for sized/cloud models), or None to skip/cancel."""
         info_cache = {}
         last_page = (len(new_models) - 1) // page_size
+        budget, blabel = self._memory_budget()
 
         def _ensure_sizes(names):
             todo = [n for n in names if n not in info_cache]
@@ -673,13 +742,17 @@ class OllamaManager:
             _ensure_sizes([m for m, _, _ in page_models])
 
             page_label = f" [dim](page {page + 1}/{last_page + 1})[/]" if last_page else ""
+            if budget:
+                self.agent.console.print(f"\n[dim]Your machine: ~{self._fmt_size(budget)} usable {blabel} — ✓ fits / ⚠ tight / ✗ too big.[/]")
             self.agent.console.print(
-                f"\n[bold yellow]New models {start + 1}–{start + len(page_models)} of {len(new_models)}[/]"
+                f"[bold yellow]New models {start + 1}–{start + len(page_models)} of {len(new_models)}[/]"
                 f"{page_label} [dim](most popular on ollama.com/library)[/]:")
             for offset, (model, desc, pulls) in enumerate(page_models):
                 gidx = start + offset + 1
                 pulls_str = f" [dim]({pulls} pulls)[/]" if pulls else ""
-                self.agent.console.print(f"  [cyan bold]{gidx}.[/] [cyan]{model}[/] — {desc[:60]}{pulls_str} {self._size_tag(info_cache.get(model))}")
+                info = info_cache.get(model)
+                fit = self._fit_marker(info[0]) if info else ""
+                self.agent.console.print(f"  [cyan bold]{gidx}.[/] [cyan]{model}[/] — {desc[:55]}{pulls_str} {self._size_tag(info)} {fit}")
             self.agent.console.print("  [dim]☁ cloud = runs on Ollama's servers (no local download; needs `ollama signin`)[/]")
 
             nav = (["'next'"] if page < last_page else []) + (["'prev'"] if page > 0 else [])
