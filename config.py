@@ -361,6 +361,9 @@ def version_is_newer(latest, current):
 # ── Changelog ──
 # Canonical changelog is CHANGELOG.md — this list powers the /changelog command
 CHANGELOG = [
+    {"version": "v3.19.2", "date": "2026-06-30", "changes": [
+        "Drag-and-drop reads the file at DROP time, not at Enter time (like Claude Code): a bracketed-paste handler reads the dropped image/file the instant it lands, so a macOS screenshot whose preview temp is deleted seconds later is still captured. Shows '📎 image attached' immediately; then type your message. Enter-time handling + a Desktop fallback remain for terminals without bracketed paste.",
+    ]},
     {"version": "v3.19.1", "date": "2026-06-30", "changes": [
         "Fix: LSP diagnostics actually work now — the client reads the async publishDiagnostics notification (it was a no-op stub returning a sentence) and returns a real list; new '/lsp diagnostics <file>' renders them, and the editor-bridge /diagnostics endpoint now returns the documented list shape.",
         "Fix: MCP stdio servers no longer desync — _send correlates responses by JSON-RPC id and skips notifications / server-initiated requests / non-JSON log lines (a notification arriving before the response used to be returned as the result, permanently shifting every later reply by one).",

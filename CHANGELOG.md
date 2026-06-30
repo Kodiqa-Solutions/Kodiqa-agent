@@ -4,6 +4,11 @@ All notable changes to Kodiqa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.19.2] - 2026-06-30
+
+### Fixed
+- **Drag-and-drop reads the file at drop time, not at Enter time** (the way Claude Code does it). A bracketed-paste key binding reads the dropped image/file the instant it lands in the prompt, so a macOS screenshot whose preview temp (`…/TemporaryItems/NSIRD_screencaptureui_…`) is deleted a few seconds later is still captured — it no longer matters whether the file still exists by the time you press Enter. You see `📎 image attached` immediately; then type your message and Enter. The Enter-time path and the Desktop fallback remain as a backstop for terminals that don't use bracketed paste.
+
 ## [3.19.1] - 2026-06-30
 
 A correctness/UX bug-fix sweep (the "Tier-0" batch).

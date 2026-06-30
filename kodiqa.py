@@ -7,8 +7,11 @@ import os
 import sys
 import threading
 from prompt_toolkit import PromptSession
+from prompt_toolkit.application import run_in_terminal
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.history import FileHistory
+from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.keys import Keys
 from prompt_toolkit.styles import Style as PTStyle
 import warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
@@ -559,6 +562,7 @@ class Kodiqa:
             history=FileHistory(self._history_file),
             completer=KodiqaCompleter(self),
             style=self._pt_style,
+            key_bindings=self._build_key_bindings(),
         )
         self.qwen_key = self.api_keys.get("qwen", "")  # backward compat alias
         # Restore Qwen region endpoint if saved
@@ -887,6 +891,34 @@ class Kodiqa:
         raw = re.split(r'(?<!\\)\s+', s)
         return [re.sub(r'\\(.)', r'\1', tok) for tok in raw if tok]
 
+    def _resolve_dropped_path(self, tok):
+        """Resolve a dropped path token to an existing file, or None. Includes a
+        macOS-screenshot fallback: the floating-thumbnail temp (…/TemporaryItems/
+        NSIRD_screencaptureui_…) is deleted seconds after the preview fades, but the
+        screenshot is also saved to the Desktop with the same name — so if the
+        original path is gone, look for the same basename on the Desktop / cwd."""
+        p = os.path.expanduser(tok)
+        if not os.path.isabs(p):
+            p = os.path.join(self.cwd, p)
+        p = os.path.abspath(p)
+        if os.path.isfile(p):
+            return p
+        base = os.path.basename(p)
+        for d in (os.path.expanduser("~/Desktop"), self.cwd):
+            cand = os.path.join(d, base)
+            if os.path.isfile(cand):
+                return cand
+        return None
+
+    def _looks_like_dropped_path(self, tok):
+        """A token that looks like an absolute file path (so it's a drag-drop, not a
+        slash command or prose): starts with / or ~/, has a deeper path separator,
+        and ends in a file extension. '/model' and plain words don't qualify."""
+        t = tok.strip()
+        return ((t.startswith("/") or t.startswith("~/"))
+                and "/" in t.lstrip("~")[1:]
+                and bool(os.path.splitext(t)[1]))
+
     def _extract_dropped_files(self, user_input):
         """If the WHOLE input is just dragged-in file path(s), read them and return
         (files, images). Returns ([], []) for anything else, so normal prompts and
@@ -902,11 +934,8 @@ class Kodiqa:
         IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
         resolved = []
         for tok in tokens:
-            path = os.path.expanduser(tok)
-            if not os.path.isabs(path):
-                path = os.path.join(self.cwd, path)
-            path = os.path.abspath(path)
-            if not os.path.isfile(path):
+            path = self._resolve_dropped_path(tok)
+            if not path:
                 return [], []  # not a pure file-drop → treat as normal input
             resolved.append(path)
         files, images = [], []
@@ -916,28 +945,73 @@ class Kodiqa:
                 img = self._read_image_for_embed(path)
                 if img:
                     images.append(img)
-                    self.console.print(f"  [dim]+ {os.path.basename(path)} (image, {os.path.getsize(path) // 1024}KB)[/]")
             else:
                 fc = self._read_file_for_embed(path)
                 if fc:
                     files.append(fc)
-                    lines = fc["content"].count("\n") + 1
-                    self.console.print(f"  [dim]+ {fc['rel_path']} ({lines} lines)[/]")
         return files, images
 
-    def _maybe_attach_dropped(self, user_input):
-        """Handle terminal drag-and-drop: attach dropped file(s)/image(s) to the
-        next message and wait for the user to type it. Returns True if handled."""
-        files, images = self._extract_dropped_files(user_input)
-        if not files and not images:
-            return False
+    def _attach_summary(self, files, images):
+        """Stash dropped files/images into pending and return a one-line summary."""
         self._pending_files = self._pending_files + files
         self._pending_images = self._pending_images + images
-        what = "image" if images and not files else "file"
-        if len(files) + len(images) > 1:
-            what += "s"
-        self.console.print(f"[dim]↑ {what} attached — type your message and press Enter (or drop more).[/]")
-        return True
+        n = len(files) + len(images)
+        what = ("image" if images and not files else "file") + ("s" if n > 1 else "")
+        names = ", ".join([os.path.basename(i["path"]) for i in images]
+                          + [f["rel_path"] for f in files])
+        return f"📎 {n} {what} attached ({names})"
+
+    def _attach_pasted_paths(self, data):
+        """Called the instant text is pasted/dropped (bracketed paste). If it's file
+        path(s), read them NOW — while a macOS screenshot temp still exists — into
+        pending attachments, and return a summary string. Returns None if the paste
+        is ordinary text (caller inserts it into the buffer as usual). This is what
+        makes drag-drop robust: the file is read at drop time, not at Enter time."""
+        files, images = self._extract_dropped_files(data or "")
+        if not files and not images:
+            return None
+        return self._attach_summary(files, images)
+
+    def _build_key_bindings(self):
+        """Key bindings for the prompt. Intercepts bracketed paste so a dropped file
+        is read immediately (see _attach_pasted_paths)."""
+        kb = KeyBindings()
+
+        @kb.add(Keys.BracketedPaste)
+        def _(event):
+            summary = self._attach_pasted_paths(event.data)
+            if summary:
+                run_in_terminal(lambda: self.console.print(
+                    f"  [green]{summary}[/] [dim]— type your message and press Enter.[/]"))
+            else:
+                event.current_buffer.insert_text(event.data)
+
+        return kb
+
+    def _maybe_attach_dropped(self, user_input):
+        """Enter-time fallback for terminals that don't use bracketed paste (the
+        paste-time path in _build_key_bindings handles the common case). Attaches
+        dropped file(s)/image(s) and waits for the user's message. Returns True if
+        handled."""
+        files, images = self._extract_dropped_files(user_input)
+        if files or images:
+            summary = self._attach_summary(files, images)
+            self.console.print(f"[dim]↑ {summary} — type your message and press Enter (or drop more).[/]")
+            return True
+        # It looked like dropped path(s) but nothing resolved — almost always a macOS
+        # screenshot whose preview temp was already deleted. Guide the user instead of
+        # falling through to "unknown command".
+        s = user_input.strip()
+        if s and not s.startswith("@") and "!img" not in s:
+            tokens = self._split_dropped_paths(s)
+            if tokens and all(self._looks_like_dropped_path(t) for t in tokens):
+                self.console.print(
+                    "[yellow]That looks like a dropped file, but it's no longer there.[/] "
+                    "[dim]macOS deletes the screenshot preview temp after a few seconds. "
+                    "Take the shot to the clipboard (⌃⌘⇧4) and type [bold]!img[/], or drag the "
+                    "saved file from your Desktop.[/]")
+                return True
+        return False
 
     def _read_image_for_embed(self, path):
         """Read an image file as base64 for embedding in messages."""

@@ -19,7 +19,9 @@ def _agent(tmp_path):
     k._pending_images = []
     # bind the real methods under test
     for m in ("_split_dropped_paths", "_extract_dropped_files", "_maybe_attach_dropped",
-              "_read_image_for_embed", "_read_file_for_embed"):
+              "_read_image_for_embed", "_read_file_for_embed",
+              "_resolve_dropped_path", "_looks_like_dropped_path",
+              "_attach_summary", "_attach_pasted_paths"):
         setattr(k, m, getattr(Kodiqa, m).__get__(k))
     return k
 
@@ -97,3 +99,43 @@ class TestMaybeAttach:
         k = _agent(tmp_path)
         assert k._maybe_attach_dropped("what is this?") is False
         assert k._pending_images == []
+
+
+class TestPasteTimeAttach:
+    """The robust path: read the file the instant it's dropped (bracketed paste),
+    not at Enter — so a macOS screenshot temp is read before it's deleted."""
+
+    def test_dropped_image_attached_on_paste(self, tmp_path):
+        img = tmp_path / "Screen shot.png"
+        img.write_bytes(_PNG)
+        k = _agent(tmp_path)
+        summary = k._attach_pasted_paths(str(img).replace(" ", r"\ "))
+        assert summary is not None and "attached" in summary
+        assert len(k._pending_images) == 1
+
+    def test_ordinary_paste_returns_none(self, tmp_path):
+        k = _agent(tmp_path)
+        assert k._attach_pasted_paths("def foo():\n    return 1\n") is None
+        assert k._pending_images == [] and k._pending_files == []
+
+    def test_vanished_screenshot_falls_back_to_desktop(self, tmp_path, monkeypatch):
+        # macOS deletes the preview temp but saves the same-named file to the Desktop.
+        desktop = tmp_path / "Desktop"
+        desktop.mkdir()
+        (desktop / "Screen Shot.png").write_bytes(_PNG)
+        monkeypatch.setattr("os.path.expanduser",
+                            lambda p: p.replace("~", str(tmp_path)) if p.startswith("~") else p)
+        k = _agent(tmp_path)
+        gone = r"/var/folders/x/T/TemporaryItems/NSIRD_x/Screen\ Shot.png"  # temp no longer exists
+        assert k._maybe_attach_dropped(gone) is True
+        assert len(k._pending_images) == 1  # recovered from Desktop
+
+    def test_vanished_with_no_fallback_shows_message_not_command(self, tmp_path):
+        k = _agent(tmp_path)
+        gone = r"/var/folders/x/T/TemporaryItems/NSIRD_x/Screen\ Shot.png"
+        # nothing on Desktop/cwd → handled (True) with a guidance message, NOT passed
+        # to the slash-command handler
+        assert k._maybe_attach_dropped(gone) is True
+        assert k._pending_images == []
+        printed = " ".join(str(c) for c in k.console.print.call_args_list)
+        assert "!img" in printed
