@@ -361,6 +361,10 @@ def version_is_newer(latest, current):
 # ── Changelog ──
 # Canonical changelog is CHANGELOG.md — this list powers the /changelog command
 CHANGELOG = [
+    {"version": "v3.19.3", "date": "2026-06-30", "changes": [
+        "Fix: attaching an image to a text-only model (e.g. DeepSeek) no longer 400s and leaves the session unable to chat. Kodiqa now detects models that can't see images, sends your message as text + a note (instead of crashing), and tells you to switch to a vision model (claude / gpt-4o / a qwen-vl model). Defensive sanitizing also strips any image already in history so it can't poison later turns.",
+        "Drag-and-drop robustness: a last-resort whole-string path attach catches dropped files even when the terminal sends them as keystrokes (waking the completer) instead of a clean bracketed paste; if a path still can't be read, Kodiqa shows exactly what it received instead of 'unknown command'.",
+    ]},
     {"version": "v3.19.2", "date": "2026-06-30", "changes": [
         "Drag-and-drop reads the file at DROP time, not at Enter time (like Claude Code): a bracketed-paste handler reads the dropped image/file the instant it lands, so a macOS screenshot whose preview temp is deleted seconds later is still captured. Shows '📎 image attached' immediately; then type your message. Enter-time handling + a Desktop fallback remain for terminals without bracketed paste.",
     ]},

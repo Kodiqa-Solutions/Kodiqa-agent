@@ -4,6 +4,12 @@ All notable changes to Kodiqa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.19.3] - 2026-06-30
+
+### Fixed
+- **Attaching an image to a text-only model no longer breaks the session.** DeepSeek (and other text-only models) reject image content with a 400, and the bad message used to stay in history — so *every* later turn re-sent it and you couldn't chat until restarting. Kodiqa now detects models that can't process images, sends your message as text plus a note instead of crashing, and tells you to switch to a vision model (`claude`, `gpt-4o`, or a `qwen-vl`/omni model). A defensive pass also strips any image already in history so it can't poison later turns after switching models.
+- **Drag-and-drop robustness.** A last-resort whole-string path attach catches dropped files even when the terminal sends them as keystrokes (which wakes the path completer) rather than a clean bracketed paste. If a dropped path still can't be read, Kodiqa shows exactly what it received instead of a bare "unknown command."
+
 ## [3.19.2] - 2026-06-30
 
 ### Fixed

@@ -988,6 +988,29 @@ class Kodiqa:
 
         return kb
 
+    def _try_attach_whole_path(self, raw):
+        """Last-resort: treat the ENTIRE input as one dragged-in file path (unescape
+        backslashes, strip trailing whitespace), even if it tokenized oddly. Attaches
+        and returns True if it resolves to a real file."""
+        cand = re.sub(r'\\(.)', r'\1', raw.strip()).strip()
+        path = self._resolve_dropped_path(cand)
+        if not path:
+            return False
+        ext = os.path.splitext(path)[1].lower()
+        if ext in {".png", ".jpg", ".jpeg", ".gif", ".webp"}:
+            img = self._read_image_for_embed(path)
+            if not img:
+                return False
+            self._pending_images = self._pending_images + [img]
+            self.console.print(f"  [green]📎 image attached ({os.path.basename(path)})[/] [dim]— type your message and press Enter.[/]")
+        else:
+            fc = self._read_file_for_embed(path)
+            if not fc:
+                return False
+            self._pending_files = self._pending_files + [fc]
+            self.console.print(f"  [green]📎 file attached ({fc['rel_path']})[/] [dim]— type your message and press Enter.[/]")
+        return True
+
     def _maybe_attach_dropped(self, user_input):
         """Enter-time fallback for terminals that don't use bracketed paste (the
         paste-time path in _build_key_bindings handles the common case). Attaches
@@ -1499,8 +1522,20 @@ class Kodiqa:
             if arg:
                 expanded += " " + arg
             self._handle_slash(expanded)
-        else:
-            self.console.print(f"[red]Unknown command: {command}. Type /help[/]")
+            return
+        # A dragged-in file can reach here when the terminal sends it as keystrokes
+        # (not a clean bracketed paste) so the completer mangles tokenization. Try a
+        # last-resort whole-string attach, and if that fails show exactly what arrived.
+        if (cmd.startswith("/") or cmd.startswith("~/")) and os.path.splitext(cmd.rstrip())[1]:
+            if self._try_attach_whole_path(cmd):
+                return
+            self.console.print(
+                "[yellow]That looks like a dropped file, but I couldn't read it.[/]\n"
+                f"  [dim]received: {cmd!r}[/]\n"
+                "  [dim]Tip: screenshot to clipboard (⌃⌘⇧4) then type [bold]!img[/], "
+                "or drag the saved file from your Desktop.[/]")
+            return
+        self.console.print(f"[red]Unknown command: {command}. Type /help[/]")
 
     # ── Custom prompt-template commands (.kodiqa/commands/*.md) ──
 
@@ -3722,13 +3757,41 @@ class Kodiqa:
             self.console.print("[red]All configured providers failed.[/]")
         return None, kind, provider
 
+    def _model_supports_vision(self):
+        """Whether the active model can accept image input. Conservative: only
+        returns False for models we're sure are text-only (so we never wrongly block
+        a real vision model), which is enough to avoid the hard 400 those return."""
+        if is_claude_model(self.model) or self._is_live_claude(self.model):
+            return True
+        provider = self._get_provider_for_model(self.model)
+        m = (self.model or "").lower()
+        if provider == "deepseek":
+            return False  # deepseek-chat/reasoner/v4 are text-only (reject image_url)
+        if provider == "mistral":
+            return "pixtral" in m  # only Pixtral is multimodal
+        if provider == "groq":
+            return any(t in m for t in ("vision", "llava", "scout", "maverick"))
+        # OpenAI (gpt-4o/o-series/gpt-5), Qwen (many are multimodal), OpenRouter, and
+        # local Ollama vision models — assume capable and let the request proceed.
+        return True
+
     def _run_native_chat(self, user_msg, kind, provider=None):
         """One agentic loop for every native tool-calling provider. `kind` is
         "claude" or "openai"; only the message/assistant/result *formats* differ,
         which are handled by the small per-kind seams below."""
         # Embed @file references and images into the user message (per-kind format).
         msg_text = self._append_files_to_text(user_msg, self._pending_files)
-        if self._pending_images:
+        if self._pending_images and not self._model_supports_vision():
+            # The active model can't see images (e.g. DeepSeek is text-only and its API
+            # rejects image content with a 400). Send text only + a note, and tell the
+            # user how to use images — instead of crashing on the API error.
+            self.console.print(
+                f"[yellow]⚠ {self.model} can't process images — sending your message as text only.[/]\n"
+                "  [dim]Switch to a vision model to use images: [bold]claude[/], [bold]gpt-4o[/], "
+                "or a [bold]qwen-vl[/]/omni model.[/]")
+            self.history.append({"role": "user", "content":
+                                 msg_text + "\n\n[An image was attached but this model can't view images.]"})
+        elif self._pending_images:
             content = [{"type": "text", "text": msg_text}]
             for img in self._pending_images:
                 if kind == "claude":
@@ -4651,7 +4714,16 @@ class Kodiqa:
                 if isinstance(content, list):
                     has_images = any(isinstance(b, dict) and b.get("type") in ("image_url", "image")
                                      for b in content)
-                    if has_images:
+                    if has_images and not self._model_supports_vision():
+                        # Defensive: a text-only model (e.g. DeepSeek) 400s on image
+                        # content and the bad message would poison every later turn
+                        # ("can't chat anymore"). Strip images to a text note so the
+                        # conversation keeps working after switching to such a model.
+                        text_parts = [b.get("text", "") for b in content
+                                      if isinstance(b, dict) and b.get("type") == "text"]
+                        text_parts.append("[image omitted — current model can't view images]")
+                        content = "\n".join(p for p in text_parts if p)
+                    elif has_images:
                         openai_content = []
                         for block in content:
                             if isinstance(block, dict):
