@@ -344,6 +344,10 @@ def version_is_newer(latest, current):
 # ── Changelog ──
 # Canonical changelog is CHANGELOG.md — this list powers the /changelog command
 CHANGELOG = [
+    {"version": "v3.18.1", "date": "2026-06-30", "changes": [
+        "Fix: DeepSeek/OpenAI-compatible providers no longer 400 with \"Messages with role 'tool' must be a response to a preceding message with 'tool_calls'\" — message history is now normalized before sending (Claude tool_use/tool_result blocks are converted to OpenAI tool_calls/tool messages, orphan tool messages are dropped, and unanswered tool_calls get a stub reply), so mixed-format history from cross-provider failover, an interrupt, or compaction can't produce an invalid request.",
+        "Fix: a 400/422 (malformed request) no longer triggers failover — it would fail identically on every provider, so a valid paid provider (e.g. DeepSeek) was silently cascading down to the next one (e.g. Qwen's free-quota wall). The real error is surfaced instead; transient failures (401/429/5xx/network) still fail over.",
+    ]},
     {"version": "v3.18.0", "date": "2026-06-27", "changes": [
         "Local-model speed/memory (Phase 1): Kodiqa-spawned Ollama servers now enable flash attention + KV-cache quantization (OLLAMA_FLASH_ATTENTION=1, OLLAMA_KV_CACHE_TYPE=q8_0) by default — ~half the KV-cache RAM, faster long contexts, negligible quality loss. Tune via config flash_attention / kv_cache_type (q8_0/q4_0/f16); your own OLLAMA_* env vars win.",
         "'Fits my machine' (Phase 2): the model list + HuggingFace quant picker now show ✓ fits / ⚠ tight / ✗ too big based on your detected VRAM/RAM budget, and flag sub-4-bit quants as low-bit (may hurt coding).",

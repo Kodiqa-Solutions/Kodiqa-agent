@@ -4,6 +4,14 @@ All notable changes to Kodiqa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.18.1] - 2026-06-30
+
+Bug fixes for OpenAI-compatible providers (DeepSeek, OpenAI, Groq, Mistral, Qwen).
+
+### Fixed
+- **DeepSeek/OpenAI-compatible 400 on mixed-format history.** A follow-up turn could fail with `Messages with role 'tool' must be a response to a preceding message with 'tool_calls'`. The conversation history is now normalized before every request: Claude-format `tool_use`/`tool_result` blocks (left by a turn that ran on Claude, including via failover) are converted to OpenAI `tool_calls`/`tool` messages, orphan `tool` messages (from an interrupt or compaction) are dropped, and any unanswered `tool_call` gets a stub reply — so the request is always structurally valid regardless of how the history was built.
+- **A malformed request (400/422) no longer triggers failover.** Because a 400 fails identically on every provider, it was silently cascading a valid paid provider (e.g. DeepSeek) down the failover chain to the next one — straight into, e.g., Qwen's free-quota wall. The real error is now surfaced and the active provider is kept. Transient/availability failures (401, 429, 5xx, network errors) still fail over as before.
+
 ## [3.18.0] - 2026-06-27
 
 Local-model speed & memory — the full model-optimization roadmap (Phases 1–4, see `docs/model-optimization-research.md`), plus a self-update check and a settings-safety fix.
