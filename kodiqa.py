@@ -545,6 +545,7 @@ class Kodiqa:
         self._last_context_tokens = 0  # prompt size of the most recent request (for auto-compact)
         self._ollama_started_by_us = False  # track if we started Ollama
         self._stream_interrupted = False  # set True when Esc/Ctrl+C aborts a stream; init'd here so an early request failure (before _start_stream_interrupt) never AttributeErrors in failover
+        self._stream_no_failover = False  # set True on a client request error (400/422) so failover does NOT cascade to other providers — a malformed request fails identically everywhere
         # Setup prompt_toolkit for Claude Code-style UI
         self._history_file = os.path.join(KODIQA_DIR, "input_history")
         self._pt_style = PTStyle.from_dict({
@@ -3387,6 +3388,7 @@ class Kodiqa:
         interrupt, which returns a dict) fall over to the next configured provider,
         rebuilding messages in its format. Returns (response, kind, provider) for
         whichever provider answered, so the caller stays in sync."""
+        self._stream_no_failover = False
         attempts = [(kind, provider, self.model)]
         if self.failover_enabled:
             current = "claude" if kind == "claude" else provider
@@ -3410,6 +3412,8 @@ class Kodiqa:
                 return response, k, p
             if self._stream_interrupted:
                 return None, k, p  # user aborted — never fail over
+            if self._stream_no_failover:
+                return None, k, p  # malformed request (400/422) — would fail identically on every provider
         if len(attempts) > 1:
             self.console.print("[red]All configured providers failed.[/]")
         return None, kind, provider
@@ -4125,35 +4129,104 @@ class Kodiqa:
         self._run_native_chat(user_msg, "openai", provider)
 
     def _build_openai_messages(self, system_prompt):
-        """Convert history to OpenAI message format for OpenAI-compatible APIs."""
+        """Convert history to OpenAI message format for OpenAI-compatible APIs.
+
+        History can be mixed-format — Claude content-blocks from a turn that ran
+        on Claude (incl. via failover), or a dangling `tool` entry left by an
+        interrupt/compaction. OpenAI-compatible APIs reject any `tool` message
+        that isn't a response to a preceding assistant `tool_calls` (and some
+        reject an assistant `tool_calls` with no matching `tool` response), so we
+        normalize defensively rather than trust the raw history:
+          • Claude `tool_use` blocks  → assistant `tool_calls`
+          • Claude `tool_result` blocks → `tool` messages
+          • orphan `tool` messages (no matching open tool_call) are dropped
+          • any tool_call left unanswered before the next turn gets a stub reply
+        """
         messages = [{"role": "system", "content": system_prompt}]
+        pending_ids = []  # tool_call ids from the last assistant awaiting a response
+
+        def backfill_pending():
+            # Close any declared-but-unanswered tool_calls so the API never sees
+            # an assistant tool_calls without a following tool response.
+            for tid in pending_ids:
+                messages.append({"role": "tool", "tool_call_id": tid,
+                                 "content": "[no result returned]"})
+            pending_ids.clear()
+
+        def tool_result_text(c):
+            if isinstance(c, list):
+                return "\n".join(
+                    str(x.get("text", x)) if isinstance(x, dict) else str(x) for x in c)
+            return c if isinstance(c, str) else str(c)
+
         for msg in self.history:
             role = msg.get("role")
             if role == "system":
                 continue
-            if role == "tool":
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": msg.get("tool_call_id", ""),
-                    "content": msg.get("content", ""),
-                })
-            elif role == "assistant":
-                entry = {"role": "assistant", "content": msg.get("content") or ""}
-                if "tool_calls" in msg:
-                    entry["tool_calls"] = msg["tool_calls"]
-                # Skip Claude-format content blocks (list of dicts)
-                if isinstance(entry["content"], list):
-                    text_parts = [b.get("text", "") for b in entry["content"] if isinstance(b, dict) and b.get("type") == "text"]
-                    entry["content"] = "\n".join(text_parts) if text_parts else ""
+
+            if role == "assistant":
+                backfill_pending()  # a new assistant turn closes the prior one
+                content = msg.get("content")
+                tool_calls = None
+                if isinstance(content, list):
+                    # Claude-format content blocks: text + tool_use
+                    text_parts, tcs = [], []
+                    for b in content:
+                        if not isinstance(b, dict):
+                            continue
+                        if b.get("type") == "text":
+                            text_parts.append(b.get("text", ""))
+                        elif b.get("type") == "tool_use":
+                            tcs.append({
+                                "id": b.get("id", ""),
+                                "type": "function",
+                                "function": {"name": b.get("name", ""),
+                                             "arguments": json.dumps(b.get("input", {}))},
+                            })
+                    text = "\n".join(p for p in text_parts if p)
+                    tool_calls = tcs or None
+                else:
+                    text = content or ""
+                    if msg.get("tool_calls"):
+                        tool_calls = msg["tool_calls"]
+                entry = {"role": "assistant", "content": text or None}
+                if tool_calls:
+                    entry["tool_calls"] = tool_calls
+                    pending_ids = [tc.get("id", "") for tc in tool_calls]
                 messages.append(entry)
+
+            elif role == "tool":
+                # OpenAI-format tool result — only valid if it answers an open call
+                tid = msg.get("tool_call_id", "")
+                if tid in pending_ids:
+                    messages.append({"role": "tool", "tool_call_id": tid,
+                                     "content": tool_result_text(msg.get("content", ""))})
+                    pending_ids.remove(tid)
+                else:
+                    _logger.debug("dropping orphan tool message id=%r (no matching tool_calls)", tid)
+
             elif role == "user":
                 content = msg.get("content", "")
+                # Claude-format tool_result blocks → OpenAI tool messages
+                if isinstance(content, list) and any(
+                        isinstance(b, dict) and b.get("type") == "tool_result" for b in content):
+                    for b in content:
+                        if not (isinstance(b, dict) and b.get("type") == "tool_result"):
+                            continue
+                        tid = b.get("tool_use_id", "")
+                        if tid in pending_ids:
+                            messages.append({"role": "tool", "tool_call_id": tid,
+                                             "content": tool_result_text(b.get("content", ""))})
+                            pending_ids.remove(tid)
+                        else:
+                            _logger.debug("dropping orphan tool_result id=%r", tid)
+                    continue
+                # Regular user message — close any open tool_calls first
+                backfill_pending()
                 if isinstance(content, list):
-                    # Check if it contains image blocks — pass through for vision
                     has_images = any(isinstance(b, dict) and b.get("type") in ("image_url", "image")
                                      for b in content)
                     if has_images:
-                        # Convert Claude image format to OpenAI if needed
                         openai_content = []
                         for block in content:
                             if isinstance(block, dict):
@@ -4162,25 +4235,20 @@ class Kodiqa:
                                     openai_content.append({"type": "image_url", "image_url": {
                                         "url": f"data:{src.get('media_type', 'image/png')};base64,{src.get('data', '')}",
                                     }})
-                                elif block.get("type") == "image_url":
+                                elif block.get("type") in ("image_url", "text"):
                                     openai_content.append(block)
-                                elif block.get("type") == "text":
-                                    openai_content.append(block)
-                                elif block.get("type") == "tool_result":
-                                    openai_content.append({"type": "text", "text": str(block.get("content", ""))})
                         content = openai_content if openai_content else ""
                     else:
-                        # Flatten text (existing behavior)
                         text_parts = []
                         for block in content:
-                            if isinstance(block, dict) and block.get("type") == "tool_result":
-                                text_parts.append(str(block.get("content", "")))
-                            elif isinstance(block, dict) and block.get("type") == "text":
+                            if isinstance(block, dict) and block.get("type") == "text":
                                 text_parts.append(block.get("text", ""))
                             elif isinstance(block, str):
                                 text_parts.append(block)
                         content = "\n".join(text_parts) if text_parts else ""
                 messages.append({"role": "user", "content": content})
+
+        backfill_pending()
         return messages
 
     def _build_openai_request_body(self, messages, provider):
@@ -4260,6 +4328,11 @@ class Kodiqa:
                     detail = resp.text[:200]
                 self.console.print(f"[red]{prov['label']} API error {resp.status_code}: {detail}[/]")
                 self.console.print(f"[dim]Model: {self.model} | Endpoint: {prov['url']}[/]")
+                # A 400/422 is a malformed-request error (bad message structure,
+                # unsupported param) — it would fail identically on every other
+                # provider, so suppress failover and surface it here instead.
+                if resp.status_code in (400, 422):
+                    self._stream_no_failover = True
                 return None
         except Exception as e:
             if _logger:
