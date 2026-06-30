@@ -83,6 +83,7 @@ class TestBuildSystemPrompt:
         agent._persona = None
         agent.memory.get_context.return_value = ""
         agent._load_context_file.return_value = ""
+        agent._load_repo_instructions.return_value = ""
         agent._git_context.return_value = ""
         agent._shell_env_context.return_value = ""
         agent._build_pinned_context.return_value = ""

@@ -30,6 +30,9 @@ class ContextBuilder:
             system_prompt = PERSONAS[self.agent._persona]["prompt"] + "\n\n" + system_prompt
         if context_file_ctx:
             system_prompt += "\n\n" + context_file_ctx
+        repo_ctx = self.agent._load_repo_instructions()
+        if repo_ctx:
+            system_prompt += "\n\n" + repo_ctx
         git_ctx = self.agent._git_context()
         if git_ctx:
             system_prompt += "\n\n" + git_ctx
@@ -147,6 +150,53 @@ class ContextBuilder:
         if g["recent_commits"]:
             lines.append(f"- Recent commits:\n```\n{g['recent_commits']}\n```")
         return "\n".join(lines)
+
+    def _read_capped(self, path, cap=12000):
+        try:
+            with open(path, "r", errors="replace") as f:
+                content = f.read().strip()
+            if len(content) > cap:
+                content = content[:cap] + "\n... (truncated)"
+            return content
+        except Exception:
+            _logger.debug("ignored error reading %s", path, exc_info=True)
+            return ""
+
+    def load_repo_instructions(self):
+        """Read in-repo agent instruction files: the cross-tool AGENTS.md standard,
+        with CLAUDE.md as an interop fallback. Walks from cwd up to the git/repo root
+        so a root-level AGENTS.md is found even when run from a subdirectory; when
+        several AGENTS.md exist along the path they're concatenated root-first so the
+        nearest (most specific) appears last, per the AGENTS.md spec."""
+        cwd = self.agent.cwd
+        chain = []
+        d = os.path.abspath(cwd)
+        for _ in range(25):
+            chain.append(d)
+            if os.path.isdir(os.path.join(d, ".git")):
+                break
+            parent = os.path.dirname(d)
+            if parent == d:
+                break
+            d = parent
+        chain.reverse()  # root-most first
+        agents_files = [os.path.join(d, "AGENTS.md") for d in chain
+                        if os.path.isfile(os.path.join(d, "AGENTS.md"))]
+        parts = []
+        if agents_files:
+            for p in agents_files:
+                content = self._read_capped(p)
+                if content:
+                    rel = os.path.relpath(p, cwd)
+                    parts.append(f"## Project Instructions (AGENTS.md: {rel})\n{content}")
+        else:
+            # Interop fallback: a CLAUDE.md in the working directory.
+            p = os.path.join(cwd, "CLAUDE.md")
+            if os.path.isfile(p):
+                content = self._read_capped(p)
+                if content:
+                    parts.append(f"## Project Instructions (CLAUDE.md)\n{content}")
+        return "\n\n".join(parts)
 
     def get_project_context_path(self):
         safe_name = self.agent.cwd.strip("/").replace("/", "-")

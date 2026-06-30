@@ -458,4 +458,40 @@ CLAUDE_TOOLS = [
             "required": ["path", "patch"]
         }
     },
+    {
+        "name": "todo_write",
+        "description": (
+            "Maintain a live task checklist for the current multi-step task. Call this "
+            "at the start of any non-trivial task to lay out the steps, then call it again "
+            "to update statuses as you make progress (mark a task in_progress before "
+            "starting it, completed when done). Send the FULL list every time — it "
+            "replaces the previous one. Keeps long tasks on track and shows the user "
+            "your plan. Skip it for trivial one-step requests."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "todos": {
+                    "type": "array",
+                    "description": "The full, updated task list (replaces the prior one).",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "content": {
+                                "type": "string",
+                                "description": "The task, as a short imperative phrase"
+                            },
+                            "status": {
+                                "type": "string",
+                                "enum": ["pending", "in_progress", "completed"],
+                                "description": "Task status; keep at most one in_progress"
+                            }
+                        },
+                        "required": ["content", "status"]
+                    }
+                }
+            },
+            "required": ["todos"]
+        }
+    },
 ]

@@ -50,6 +50,7 @@ from actions import (
     do_undo_edit, do_redo_edit, redo_paths, _undo_buffer, set_hooks,
     get_change_log, clear_change_log,
     get_turn_snapshot, clear_turn_snapshot, do_rewind,
+    get_task_list, clear_task_list, _TASK_MARK,
 )
 from web import set_search_engine, get_search_engine, set_google_api_keys, get_google_api_keys
 from tools import CLAUDE_TOOLS
@@ -608,6 +609,12 @@ class Kodiqa:
         # Cross-provider failover: on a hard API failure, auto-retry the request on
         # the next configured provider (only triggers on failure; notifies loudly).
         self.failover_enabled = self.settings.get("failover", True)
+        # Reasoning-effort dial (/effort): None = provider default, else low/medium/high.
+        # Applied to OpenAI reasoning models (reasoning_effort) + OpenRouter (reasoning.effort).
+        self.reasoning_effort = self.settings.get("reasoning_effort") or None
+        # Per-category auto-approve (/approve): categories (write/command/delete/clipboard)
+        # whose confirmations are skipped — finer than the 3 broad permission modes.
+        self.auto_approve = set(self.settings.get("auto_approve", []))
         self._turn_stack = []  # per-turn pre-edit file snapshots for /rewind (cap 10)
         # TOON: re-encode JSON tool results into a compact tabular form to save
         # context tokens (only when it's actually shorter). Opt-in.
@@ -688,6 +695,7 @@ class Kodiqa:
         ("/recommend", (), "_cmd_recommend", "Models & providers", "", "Recommend local coding models that fit your machine"),
         ("/key", (), "_cmd_key", "Models & providers", "[provider]", "Add/update an API key"),
         ("/failover", (), "_cmd_failover", "Models & providers", "[on|off|auto|models…]", "Cross-provider failover (auto-retry on another provider when one fails)"),
+        ("/effort", (), "_cmd_effort", "Models & providers", "[off|low|medium|high]", "Reasoning-effort dial (OpenAI o-series/gpt-5, OpenRouter)"),
 
         ("/clear", (), "_cmd_clear", "Conversation", "", "Clear conversation"),
         ("/compact", (), "_cmd_compact", "Conversation", "", "Summarize conversation to save context"),
@@ -705,13 +713,14 @@ class Kodiqa:
         ("/rewind", (), "_cmd_rewind", "Conversation", "[n]", "Revert ALL file changes from the last n turns"),
 
         ("/mode", (), "_cmd_mode", "Modes & permissions", "[mode]", "Permission mode: default/relaxed/auto"),
+        ("/approve", (), "_cmd_approve", "Modes & permissions", "[write|command|delete|clipboard] [on|off]", "Per-category auto-approve (finer than /mode)"),
         ("/plan", (), "_cmd_plan", "Modes & permissions", "", "Toggle plan mode"),
         ("/accept", (), "_cmd_accept", "Modes & permissions", "", "Toggle batch edit review"),
         ("/verbose", (), "_cmd_verbose", "Modes & permissions", "", "Toggle compact/verbose streaming"),
         ("/sandbox", (), "_cmd_sandbox", "Modes & permissions", "[on|off]", "Toggle OS-level command sandboxing"),
         ("/autocommit", (), "_cmd_autocommit", "Modes & permissions", "", "Toggle auto git commit after edits"),
         ("/budget", (), "_cmd_budget", "Modes & permissions", "<amount>", "Set session budget limit"),
-        ("/persona", (), "_cmd_persona", "Modes & permissions", "<name>", "Switch AI persona"),
+        ("/persona", (), "_cmd_persona", "Modes & permissions", "<name> [model]", "Switch AI persona (optionally bind a model it auto-uses)"),
         ("/architect", (), "_cmd_architect", "Modes & permissions", "<planner> <impl>", "Architect mode: planner + implementer"),
 
         ("/scan", (), "_cmd_scan", "Project & context", "[path]", "Scan project into context"),
@@ -863,6 +872,68 @@ class Kodiqa:
                     self.console.print(f"  [dim]+ {os.path.basename(img_path)} (image, {os.path.getsize(img_path) // 1024}KB)[/]")
 
         return cleaned, files, images
+
+    def _split_dropped_paths(self, s):
+        """Split a drag-and-drop input into path tokens. Terminals paste dropped
+        files as backslash-escaped (spaces → '\\ ') or quoted absolute paths,
+        space-separated for multiple files."""
+        s = s.strip()
+        if len(s) >= 2 and s[0] in "\"'" and s[-1] == s[0]:
+            return [s[1:-1]]
+        raw = re.split(r'(?<!\\)\s+', s)
+        return [re.sub(r'\\(.)', r'\1', tok) for tok in raw if tok]
+
+    def _extract_dropped_files(self, user_input):
+        """If the WHOLE input is just dragged-in file path(s), read them and return
+        (files, images). Returns ([], []) for anything else, so normal prompts and
+        slash commands are never disturbed. Targets the terminal drag-drop case
+        (which pastes only the escaped path, starting with '/' — otherwise mistaken
+        for a slash command)."""
+        s = user_input.strip()
+        if not s or s.startswith("@") or "!img" in s:
+            return [], []
+        tokens = self._split_dropped_paths(s)
+        if not tokens:
+            return [], []
+        IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+        resolved = []
+        for tok in tokens:
+            path = os.path.expanduser(tok)
+            if not os.path.isabs(path):
+                path = os.path.join(self.cwd, path)
+            path = os.path.abspath(path)
+            if not os.path.isfile(path):
+                return [], []  # not a pure file-drop → treat as normal input
+            resolved.append(path)
+        files, images = [], []
+        for path in resolved:
+            ext = os.path.splitext(path)[1].lower()
+            if ext in IMAGE_EXTS:
+                img = self._read_image_for_embed(path)
+                if img:
+                    images.append(img)
+                    self.console.print(f"  [dim]+ {os.path.basename(path)} (image, {os.path.getsize(path) // 1024}KB)[/]")
+            else:
+                fc = self._read_file_for_embed(path)
+                if fc:
+                    files.append(fc)
+                    lines = fc["content"].count("\n") + 1
+                    self.console.print(f"  [dim]+ {fc['rel_path']} ({lines} lines)[/]")
+        return files, images
+
+    def _maybe_attach_dropped(self, user_input):
+        """Handle terminal drag-and-drop: attach dropped file(s)/image(s) to the
+        next message and wait for the user to type it. Returns True if handled."""
+        files, images = self._extract_dropped_files(user_input)
+        if not files and not images:
+            return False
+        self._pending_files = self._pending_files + files
+        self._pending_images = self._pending_images + images
+        what = "image" if images and not files else "file"
+        if len(files) + len(images) > 1:
+            what += "s"
+        self.console.print(f"[dim]↑ {what} attached — type your message and press Enter (or drop more).[/]")
+        return True
 
     def _read_image_for_embed(self, path):
         """Read an image file as base64 for embedding in messages."""
@@ -1044,6 +1115,10 @@ class Kodiqa:
                     if user_input.strip().lower() in ("quit", "exit"):
                         self._quit()
                         return
+                    elif self._maybe_attach_dropped(user_input):
+                        # Terminal drag-and-drop pasted a bare file/image path —
+                        # attached for the next message; wait for the user to type it.
+                        pass
                     elif user_input.strip().startswith("/"):
                         self._handle_slash(user_input.strip())
                     else:
@@ -1056,8 +1131,10 @@ class Kodiqa:
                             elif not attached_images:
                                 self.console.print("[dim]No image found on clipboard.[/]")
                             user_input = user_input.replace("!img", "").strip()
-                        self._pending_files = attached_files
-                        self._pending_images = attached_images
+                        # Accumulate onto anything already attached via a prior drop;
+                        # _chat resets the pending lists once the turn is sent.
+                        self._pending_files = self._pending_files + attached_files
+                        self._pending_images = self._pending_images + attached_images
                         if user_input.strip():
                             self._chat(user_input)
                 except Exception as e:
@@ -1144,6 +1221,9 @@ class Kodiqa:
 
     def _load_context_file(self):
         return self.context.load_context_file()
+
+    def _load_repo_instructions(self):
+        return self.context.load_repo_instructions()
 
     def _welcome(self):
         if is_claude_model(self.model) or self._is_live_claude(self.model):
@@ -1803,6 +1883,7 @@ class Kodiqa:
 
     def _cmd_clear(self, arg):
         self.history = []
+        clear_task_list()
         self._clear_session()
         self.console.print("[dim]Conversation cleared.[/]")
 
@@ -1865,6 +1946,53 @@ class Kodiqa:
             self.settings["failover_chain"] = parts
             save_settings(self.settings)
             self.console.print("[green]Failover order set:[/] " + " → ".join(parts))
+
+    def _cmd_effort(self, arg):
+        arg = arg.strip().lower()
+        if not arg:
+            cur = self.reasoning_effort or "default"
+            self.console.print(f"Reasoning effort: [cyan]{cur}[/]")
+            self.console.print("[dim]  /effort off|low|medium|high[/]")
+            self.console.print("[dim]  Applies to OpenAI reasoning models (o-series/gpt-5) and OpenRouter;[/]")
+            self.console.print("[dim]  other providers use their own default.[/]")
+            return
+        if arg in ("off", "default", "none"):
+            self.reasoning_effort = None
+            self.settings.pop("reasoning_effort", None)
+            save_settings(self.settings)
+            self.console.print("[yellow]Reasoning effort: provider default[/]")
+        elif arg in ("low", "medium", "high"):
+            self.reasoning_effort = arg
+            self.settings["reasoning_effort"] = arg
+            save_settings(self.settings)
+            self.console.print(f"[green]Reasoning effort: {arg}[/]")
+        else:
+            self.console.print("[red]Usage: /effort [off|low|medium|high][/]")
+
+    def _cmd_approve(self, arg):
+        cats = self._APPROVE_CATEGORIES
+        arg = arg.strip().lower()
+        if not arg:
+            self.console.print("[bold]Per-category auto-approve[/] [dim](ON = no confirm prompt for that category)[/]:")
+            for c in cats:
+                state = "[green]ON[/]" if c in self.auto_approve else "[dim]off[/]"
+                self.console.print(f"  {c}: {state}")
+            self.console.print("[dim]  /approve <write|command|delete|clipboard> [on|off][/]")
+            self.console.print("[dim]  Read-only tools are always auto-approved; /mode sets the broad mode.[/]")
+            return
+        parts = arg.split()
+        cat = parts[0]
+        if cat not in cats:
+            self.console.print(f"[red]Unknown category '{cat}'. One of: {', '.join(cats)}[/]")
+            return
+        on = parts[1] not in ("off", "no", "false") if len(parts) > 1 else True
+        if on:
+            self.auto_approve.add(cat)
+        else:
+            self.auto_approve.discard(cat)
+        self.settings["auto_approve"] = sorted(self.auto_approve)
+        save_settings(self.settings)
+        self.console.print(f"[{'green' if on else 'yellow'}]Auto-approve {cat}: {'ON' if on else 'off'}[/]")
 
     def _cmd_cd(self, arg):
         path = os.path.expanduser(arg) if arg else os.path.expanduser("~")
@@ -2411,22 +2539,41 @@ class Kodiqa:
         self._handle_test_fix(arg)
 
     def _cmd_persona(self, arg):
+        arg = arg.strip()
+        bindings = self.settings.get("persona_models", {})
         if not arg:
             if self._persona:
                 self.console.print(f"Current persona: [cyan]{self._persona}[/]")
             self.console.print("[bold]Available personas:[/]")
             for name, p in PERSONAS.items():
                 marker = " [dim]<- active[/]" if name == self._persona else ""
-                self.console.print(f"  [cyan]{name}[/] \u2014 {p['name']}{marker}")
+                bound = bindings.get(name)
+                bstr = f" [dim](model: {bound})[/]" if bound else ""
+                self.console.print(f"  [cyan]{name}[/] \u2014 {p['name']}{bstr}{marker}")
             self.console.print(f"  [cyan]off[/] \u2014 reset to default")
-        elif arg.strip().lower() == "off":
+            self.console.print("[dim]  /persona <name> [model]  \u2014 switch; with a model, bind it so this persona auto-uses it[/]")
+            return
+        parts = arg.split()
+        name = parts[0].lower()
+        if name == "off":
             self._persona = None
             self.console.print("[yellow]Persona reset to default.[/]")
-        elif arg.strip() in PERSONAS:
-            self._persona = arg.strip()
-            self.console.print(f"[green]Persona:[/] {PERSONAS[self._persona]['name']}")
-        else:
-            self.console.print(f"[red]Unknown persona: {arg}. Use /persona to list.[/]")
+            return
+        if name not in PERSONAS:
+            self.console.print(f"[red]Unknown persona: {name}. Use /persona to list.[/]")
+            return
+        self._persona = name
+        self.console.print(f"[green]Persona:[/] {PERSONAS[name]['name']}")
+        # Optionally bind a model to this persona (persisted).
+        if len(parts) > 1:
+            bindings = self.settings.setdefault("persona_models", {})
+            bindings[name] = parts[1]
+            save_settings(self.settings)
+            self.console.print(f"[dim]Bound model '{parts[1]}' to {name}.[/]")
+        # Auto-switch to the persona's bound model, if any and not already active.
+        bound = self.settings.get("persona_models", {}).get(name)
+        if bound and self._resolve_model_name(bound) != self.model:
+            self._cmd_model(bound)
 
     def _cmd_patch(self, arg):
         try:
@@ -3502,7 +3649,7 @@ class Kodiqa:
         self._pending_images = []
 
         _iteration = 0
-        _max_iter = self.config.get("max_iterations", 15)
+        _max_iter = self.config.get("max_iterations", 40)
         while True:
             _iteration += 1
             if _iteration > _max_iter:
@@ -3563,6 +3710,25 @@ class Kodiqa:
             ]
         return msg
 
+    def _render_task_list(self):
+        """Render the model's live task list (todo_write tool) as a panel."""
+        tasks = get_task_list()
+        if not tasks:
+            return
+        lines = []
+        for t in tasks:
+            mark = _TASK_MARK.get(t["status"], "◻")
+            text = t["content"]
+            if t["status"] == "completed":
+                text = f"[dim strike]{text}[/]"
+            elif t["status"] == "in_progress":
+                text = f"[bold]{text}[/]"
+            color = {"completed": "green", "in_progress": "yellow"}.get(t["status"], "dim")
+            lines.append(f"[{color}]{mark}[/] {text}")
+        done = sum(1 for t in tasks if t["status"] == "completed")
+        self.console.print(Panel("\n".join(lines), title=f"Tasks ({done}/{len(tasks)})",
+                                 border_style="cyan", expand=False))
+
     def _run_tool_calls(self, tool_calls):
         """Execute a turn's tool calls (MCP + regular, parallel/single), review
         queued edits, auto-commit, and lint. Returns (results_list, lint_errors).
@@ -3604,6 +3770,10 @@ class Kodiqa:
                     result = result[:20000] + "\n... (truncated)"
                 results_list.append((tc["id"], result))
             self.console.print(f"  [green]●[/] {label}")
+
+        # Render the live task list as a panel whenever the model updated it.
+        if any(tc["name"] == "todo_write" for tc in tool_calls):
+            self._render_task_list()
 
         # Compact JSON tool results into TOON to save context tokens (when shorter).
         if self.toon_enabled:
@@ -3686,7 +3856,7 @@ class Kodiqa:
         self._pending_files = []
         self._pending_images = []
         _iteration = 0
-        _max_iter = self.config.get("max_iterations", 15)
+        _max_iter = self.config.get("max_iterations", 40)
         while True:
             _iteration += 1
             if _iteration > _max_iter:
@@ -4429,6 +4599,16 @@ class Kodiqa:
         # parallel_tool_calls only for providers that support it
         if provider in ("openai",):
             body["parallel_tool_calls"] = True
+        # Reasoning-effort dial (/effort). Only send where the param is known-safe:
+        # OpenAI reasoning models (o-series / gpt-5) take `reasoning_effort`;
+        # OpenRouter takes a unified `reasoning.effort`. Other providers have no
+        # standard knob, so we skip them to avoid a 400 on an unknown parameter.
+        effort = getattr(self, "reasoning_effort", None)
+        if effort in ("low", "medium", "high"):
+            if provider == "openai" and (re.match(r"^o\d", model) or model.startswith("gpt-5")):
+                body["reasoning_effort"] = effort
+            elif provider == "openrouter":
+                body["reasoning"] = {"effort": effort}
         return body
 
     def _call_openai_compat_stream(self, messages, provider):
@@ -5985,6 +6165,18 @@ class Kodiqa:
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
         return selected
 
+    _APPROVE_CATEGORIES = ("write", "command", "delete", "clipboard")
+
+    def _action_category(self, action_type):
+        """Map a confirm-prompt action type to a coarse auto-approve category."""
+        if action_type in ("run command", "git commit"):
+            return "command"
+        if action_type == "delete file":
+            return "delete"
+        if action_type.startswith("copy to clipboard"):
+            return "clipboard"
+        return "write"  # write/edit/multi-edit/apply patch/replace all/create dir/move
+
     def _confirm(self, description):
         self.console.print()
         # Extract action type from description (e.g. "Write file: ..." -> "write file")
@@ -6002,7 +6194,14 @@ class Kodiqa:
                 self.console.print(f"  [green]●[/] {description} [dim](relaxed mode)[/]")
                 return True
 
-        # Check if this action type was auto-approved
+        # Per-category auto-approve (/approve write|command|delete|clipboard) —
+        # persistent, finer-grained than the broad modes.
+        category = self._action_category(action_type)
+        if category in self.auto_approve:
+            self.console.print(f"  [green]●[/] {description} [dim](auto-approve: {category})[/]")
+            return True
+
+        # Check if this action type was auto-approved (this session, via "don't ask again")
         if not hasattr(self, "_auto_approved"):
             self._auto_approved = set()
         if action_type in self._auto_approved:
@@ -6060,6 +6259,9 @@ def _tool_label(name, params):
         "clipboard_read": lambda: "Read clipboard",
         "clipboard_write": lambda: f"Copy to clipboard ({len(p.get('content', ''))} chars)",
         "diff_apply": lambda: f"Apply patch [cyan]{_short_path(p.get('path', '?'))}[/]",
+        "todo_write": lambda: (
+            lambda ts: f"Update task list ([green]{sum(1 for t in ts if isinstance(t, dict) and t.get('status') == 'completed')}[/]/{len(ts)} done)"
+        )(p.get("todos", []) or []),
     }
     fn = labels.get(name)
     if fn:

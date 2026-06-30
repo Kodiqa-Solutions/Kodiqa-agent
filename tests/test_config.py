@@ -93,13 +93,22 @@ class TestProviderRegistry:
                 assert alias not in seen, f"Alias '{alias}' in both {seen[alias]} and {prov_name}"
                 seen[alias] = prov_name
 
-    def test_five_providers(self):
-        assert len(OPENAI_COMPAT_PROVIDERS) == 5
-        assert "openai" in OPENAI_COMPAT_PROVIDERS
-        assert "deepseek" in OPENAI_COMPAT_PROVIDERS
-        assert "groq" in OPENAI_COMPAT_PROVIDERS
-        assert "mistral" in OPENAI_COMPAT_PROVIDERS
-        assert "qwen" in OPENAI_COMPAT_PROVIDERS
+    def test_core_providers_present(self):
+        assert len(OPENAI_COMPAT_PROVIDERS) == 6
+        for p in ("openai", "deepseek", "groq", "mistral", "qwen", "openrouter"):
+            assert p in OPENAI_COMPAT_PROVIDERS
+
+    def test_every_provider_has_required_keys(self):
+        # The generic _chat_openai_compat + registry-driven wiring rely on these.
+        for name, prov in OPENAI_COMPAT_PROVIDERS.items():
+            for k in ("url", "models_url", "key_setting", "color", "label", "aliases"):
+                assert k in prov, f"{name} missing {k}"
+
+    def test_openrouter_provider(self):
+        orp = OPENAI_COMPAT_PROVIDERS["openrouter"]
+        assert orp["key_setting"] == "openrouter_api_key"
+        assert "openrouter.ai" in orp["url"]
+        assert orp["aliases"]["openrouter"] == "openrouter/auto"
 
 
 class TestConfirmActions:

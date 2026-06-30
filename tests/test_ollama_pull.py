@@ -551,6 +551,17 @@ class TestQuantizeAndRecommend:
         m.recommend_models()
         blob = "\n".join(seen)
         assert "qwen2.5-coder:7b" in blob and "Recommended local coding models" in blob
+        # refreshed list: agentic-coding picks
+        assert "devstral" in blob
+        assert "REAP" in blob
+
+    def test_recommend_reap25b_is_searchable_not_dead_repo(self):
+        from ollama_manager import OllamaManager
+        names = [n for n, _ in OllamaManager.CODING_RECOMMENDATIONS]
+        # the consumer REAP entry must be a plain name (HF-search finds a real GGUF
+        # like bartowski/…), NOT the unsloth 25B repo that doesn't exist
+        assert "Qwen3-Coder-REAP-25B-A3B" in names
+        assert "hf.co/unsloth/Qwen3-Coder-REAP-25B-A3B-GGUF" not in names
 
     def test_commands_registered(self):
         from kodiqa import Kodiqa

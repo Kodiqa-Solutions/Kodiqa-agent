@@ -4,6 +4,24 @@ All notable changes to Kodiqa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.19.0] - 2026-06-30
+
+Six quick-win features focused on long-task reliability, interop, and reach.
+
+### Added
+- **Live task list (`todo_write` tool).** The model maintains a checkable plan during long multi-step tasks and re-grounds itself each turn; Kodiqa renders it as a panel (`✓` done / `▸` in-progress / `◻` pending). The single biggest quality lever for long agentic runs — especially on smaller local models that otherwise lose the thread. Works for the native (Claude/OpenAI-compat) and Ollama providers; resets on `/clear`. Distinct from plan mode (a one-shot up-front plan).
+- **`AGENTS.md` interop.** Kodiqa now reads the cross-tool [AGENTS.md](https://agents.md) project-instructions standard — walking up from the working directory to the repo root, concatenating root→nearest so the most specific wins — with `CLAUDE.md` as a fallback. Instantly respects instruction files in repos already set up for other agents.
+- **OpenRouter provider.** Add a key with `/key openrouter` to reach hundreds of models from every vendor by their `vendor/model` id (auto-discovered via `/models`; `openrouter/auto` picks a good default). OpenRouter reports `context_length`, so the context window is auto-detected too.
+- **`/effort` reasoning dial.** Set reasoning effort `low`/`medium`/`high` (or `off`). Applied to OpenAI reasoning models (o-series / gpt-5) via `reasoning_effort` and to OpenRouter via `reasoning.effort`; other providers use their own default (no risk of a 400 on an unsupported param).
+- **Per-persona model binding.** `/persona <name> <model>` binds a model to a persona so switching personas auto-switches the model (e.g. a strong model for `architect`, a cheap fast one for `code`). Persisted; a plain `/persona <name>` re-applies the binding.
+- **Per-category auto-approve.** `/approve write|command|delete|clipboard [on|off]` auto-approves a whole action category without dropping to full `auto` mode — finer-grained trust than the three permission modes. Persisted.
+
+- **Drag-and-drop images & files.** Dropping a file into the terminal now attaches it — images are sent to the model to view — instead of being mistaken for a slash command ("unknown command"). Handles the backslash-escaped / quoted absolute paths terminals paste on drop, supports multiple files at once, and attaches to your next message (type it and press Enter). Complements the existing `@file`, inline-path, and `!img` clipboard-paste options.
+
+### Changed
+- **Default `max_iterations` raised 15 → 40.** The agentic loop's turn cap was conservative enough that long multi-step tasks (large refactors, many file edits) stopped early. Still overridable in `~/.kodiqa/config.json`, and `/budget` remains the cost backstop. (You can also type `continue` to resume past the cap.)
+- **`/recommend` refreshed** with **Devstral** (Mistral × OpenHands, agentic-coding tuned) and the expert-pruned **Cerebras Qwen3-Coder-REAP-25B-A3B** (~coding-lossless, ~20% lighter than the 30B, keeps the 3B-active speed profile), each annotated with fit; both pull via the existing HuggingFace GGUF fallback.
+
 ## [3.18.2] - 2026-06-30
 
 Context-window auto-detection, plus the Claude-side companion to the v3.18.1 provider fixes.

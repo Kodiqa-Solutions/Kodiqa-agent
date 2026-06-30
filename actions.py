@@ -154,6 +154,55 @@ def clear_change_log():
     _change_log.clear()
 
 
+# Live task list ("todo_write" tool): the model maintains a checklist across a
+# long multi-step run, re-sending the whole list each update. Session-scoped state
+# (not persisted) the UI renders as a panel. Each item: {"content", "status"}.
+_task_list = []
+_TASK_STATUSES = ("pending", "in_progress", "completed")
+_TASK_MARK = {"pending": "◻", "in_progress": "▸", "completed": "✓"}
+
+
+def get_task_list():
+    return list(_task_list)
+
+
+def clear_task_list():
+    _task_list.clear()
+
+
+def do_todo_write(todos):
+    """Replace the live task list with the model's updated checklist. `todos` is the
+    full list of {content, status}; status one of pending/in_progress/completed."""
+    global _task_list
+    if isinstance(todos, str):
+        # Ollama text-action mode passes the array as a JSON string.
+        try:
+            todos = json.loads(todos)
+        except (ValueError, TypeError):
+            return "Error: 'todos' must be a JSON list of {content, status} items."
+    if not isinstance(todos, list):
+        return "Error: 'todos' must be a list of {content, status} items."
+    cleaned = []
+    for t in todos:
+        if isinstance(t, str):
+            t = {"content": t, "status": "pending"}
+        if not isinstance(t, dict):
+            continue
+        content = str(t.get("content", "")).strip()
+        if not content:
+            continue
+        status = t.get("status", "pending")
+        if status not in _TASK_STATUSES:
+            status = "pending"
+        cleaned.append({"content": content, "status": status})
+    if not cleaned:
+        return "Error: no valid tasks provided (each needs non-empty 'content')."
+    _task_list = cleaned
+    done = sum(1 for t in cleaned if t["status"] == "completed")
+    lines = [f"{_TASK_MARK[t['status']]} {t['content']}" for t in cleaned]
+    return f"Task list updated ({done}/{len(cleaned)} done):\n" + "\n".join(lines)
+
+
 def set_batch_mode(enabled):
     global _batch_mode
     _batch_mode = enabled
@@ -400,6 +449,7 @@ def _dispatch(name, p, memory):
         "git_commit": lambda: do_git_commit(p.get("message", "")),
         "memory_store": lambda: memory.store(p.get("content", ""), p.get("tags", "")),
         "memory_search": lambda: memory.search(p.get("query", "")),
+        "todo_write": lambda: do_todo_write(p.get("todos", [])),
         "read_image": lambda: do_read_image(p.get("path", "")),
         "read_pdf": lambda: do_read_pdf(p.get("path", "")),
         "undo_edit": lambda: do_undo_edit(p.get("path", "")),

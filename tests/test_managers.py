@@ -64,6 +64,64 @@ class TestContextBuilderPure:
         path = ContextBuilder(agent).get_project_context_path()
         assert path.endswith("Users-x-proj.md")
 
+    def test_repo_instructions_reads_agents_md(self, tmp_path):
+        from context_builder import ContextBuilder
+        (tmp_path / ".git").mkdir()
+        (tmp_path / "AGENTS.md").write_text("Use tabs, not spaces.")
+        agent = MagicMock()
+        agent.cwd = str(tmp_path)
+        out = ContextBuilder(agent).load_repo_instructions()
+        assert "AGENTS.md" in out and "Use tabs, not spaces." in out
+
+    def test_repo_instructions_walks_up_to_root(self, tmp_path):
+        from context_builder import ContextBuilder
+        (tmp_path / ".git").mkdir()
+        (tmp_path / "AGENTS.md").write_text("root rule")
+        sub = tmp_path / "pkg" / "mod"
+        sub.mkdir(parents=True)
+        agent = MagicMock()
+        agent.cwd = str(sub)
+        out = ContextBuilder(agent).load_repo_instructions()
+        assert "root rule" in out  # found by walking up to the repo root
+
+    def test_repo_instructions_nearest_wins_ordering(self, tmp_path):
+        from context_builder import ContextBuilder
+        (tmp_path / ".git").mkdir()
+        (tmp_path / "AGENTS.md").write_text("ROOT")
+        sub = tmp_path / "pkg"
+        sub.mkdir()
+        (sub / "AGENTS.md").write_text("NEAREST")
+        agent = MagicMock()
+        agent.cwd = str(sub)
+        out = ContextBuilder(agent).load_repo_instructions()
+        assert out.index("ROOT") < out.index("NEAREST")  # root first, nearest last
+
+    def test_repo_instructions_claude_md_fallback(self, tmp_path):
+        from context_builder import ContextBuilder
+        (tmp_path / ".git").mkdir()
+        (tmp_path / "CLAUDE.md").write_text("claude rules")
+        agent = MagicMock()
+        agent.cwd = str(tmp_path)
+        out = ContextBuilder(agent).load_repo_instructions()
+        assert "CLAUDE.md" in out and "claude rules" in out
+
+    def test_repo_instructions_agents_preferred_over_claude(self, tmp_path):
+        from context_builder import ContextBuilder
+        (tmp_path / ".git").mkdir()
+        (tmp_path / "AGENTS.md").write_text("agents wins")
+        (tmp_path / "CLAUDE.md").write_text("claude ignored")
+        agent = MagicMock()
+        agent.cwd = str(tmp_path)
+        out = ContextBuilder(agent).load_repo_instructions()
+        assert "agents wins" in out and "claude ignored" not in out
+
+    def test_repo_instructions_empty_when_none(self, tmp_path):
+        from context_builder import ContextBuilder
+        (tmp_path / ".git").mkdir()
+        agent = MagicMock()
+        agent.cwd = str(tmp_path)
+        assert ContextBuilder(agent).load_repo_instructions() == ""
+
 
 class TestModelRegistryPure:
     def test_resolve_alias(self):

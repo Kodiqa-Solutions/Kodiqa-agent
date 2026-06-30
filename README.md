@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <em>82 slash commands &bull; 26 tools &bull; lazy MCP tools &bull; RAG search &bull; custom personas &bull; plugins &bull; sub-agents &bull; LSP &bull; 5 themes</em>
+  <em>84 slash commands &bull; 27 tools &bull; lazy MCP tools &bull; RAG search &bull; custom personas &bull; plugins &bull; sub-agents &bull; LSP &bull; 5 themes</em>
 </p>
 
 <p align="center">
@@ -40,7 +40,7 @@
 |---------|--------|-------------|-------|------------|----------|
 | **Price** | Free (Ollama) or pay-per-token | $20/mo (Pro) or pay-per-token | Pay-per-token only | Free (Gemini Flash) | Pay-per-token only |
 | **Local/offline** | Yes (Ollama) | No | No | No | Yes (Ollama) |
-| **API providers** | 7 (Ollama, Claude, OpenAI, DeepSeek, Groq, Mistral, Qwen) | 1 (Claude) | 10+ (OpenAI, Claude, etc.) | 1 (Gemini) | 75+ (OpenAI, Claude, Gemini, Ollama, etc.) |
+| **API providers** | 8 (Ollama, Claude, OpenAI, DeepSeek, Groq, Mistral, Qwen, OpenRouter) | 1 (Claude) | 10+ (OpenAI, Claude, etc.) | 1 (Gemini) | 75+ (OpenAI, Claude, Gemini, Ollama, etc.) |
 | **Tools** | 26 built-in | ~15 built-in | ~10 built-in | ~12 built-in | ~12 built-in |
 | **MCP support** | Yes (local + remote + OAuth) | Yes | No | Yes | Yes |
 | **OpenAPI / GraphQL as tools** | Yes | No | No | No | No |
@@ -90,8 +90,8 @@ kodiqa
 ## Features
 
 - **Claude Code-style UI** — `❯` prompt with separator line (prompt_toolkit), arrow-key navigation for all prompts
-- **26 tools** — file ops, git, search, web, memory, clipboard, multi-edit, undo, diff apply
-- **7 API providers** — Ollama (local/free), Claude, OpenAI, DeepSeek, Groq, Mistral, Qwen
+- **27 tools** — file ops, git, search, web, memory, clipboard, multi-edit, undo, diff apply, live task list
+- **8 API providers** — Ollama (local/free), Claude, OpenAI, DeepSeek, Groq, Mistral, Qwen, OpenRouter (hundreds of models)
 - **Editor/IDE bridge** — `kodiqa --serve` exposes a local HTTP API (`/ask`, `/diagnostics`) for VS Code/Zed/Neovim extensions
 - **Cross-provider failover** — if a provider is down/rate-limited, the turn auto-retries on the next configured provider and continues (`/failover`)
 - **TOON output** — `/toon` re-encodes JSON tool results into a compact tabular form (~60% fewer tokens on large arrays)

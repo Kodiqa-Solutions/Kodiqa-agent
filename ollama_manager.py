@@ -1047,11 +1047,13 @@ class OllamaManager:
     # big-RAM machines). Starting points, not exhaustive; sizes/fit shown live.
     CODING_RECOMMENDATIONS = [
         ("qwen3-coder", "Qwen3 Coder — strong agentic coder (MoE)"),
+        ("devstral", "Devstral 24B — agentic-coding tuned (Mistral×OpenHands), strong at tool use"),
         ("qwen2.5-coder:7b", "Qwen2.5 Coder 7B — great quality/size for laptops"),
         ("qwen2.5-coder:14b", "Qwen2.5 Coder 14B — stronger, needs more RAM"),
         ("qwen2.5-coder:32b", "Qwen2.5 Coder 32B — near-frontier local coding"),
         ("deepseek-coder-v2", "DeepSeek-Coder-V2 — capable MoE coder"),
-        ("hf.co/unsloth/Qwen3-Coder-REAP-25B-A3B-GGUF", "Qwen3-Coder REAP — expert-pruned, ~coding-lossless (big)"),
+        ("Qwen3-Coder-REAP-25B-A3B", "Qwen3-Coder REAP 25B — expert-pruned 30B→25B, ~coding-lossless, keeps 3B-active speed (via HF search)"),
+        ("hf.co/unsloth/Qwen3-Coder-REAP-363B-A35B-GGUF", "Qwen3-Coder REAP 363B — pruned flagship for big-RAM workstations"),
     ]
 
     def recommend_models(self, arg=""):

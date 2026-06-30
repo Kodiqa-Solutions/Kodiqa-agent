@@ -184,6 +184,23 @@ OPENAI_COMPAT_PROVIDERS = {
         "label": "Qwen",
         "aliases": QWEN_ALIASES,
     },
+    # OpenRouter is a meta-provider: one key unlocks hundreds of models from every
+    # vendor through the OpenAI-compatible schema. Pick any model by its full
+    # "vendor/model" id (auto-discovered via /models, which also reports
+    # context_length so _context_limit gets the real window). "openrouter/auto"
+    # routes to a good default automatically.
+    "openrouter": {
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "models_url": "https://openrouter.ai/api/v1/models",
+        "key_setting": "openrouter_api_key",
+        "key_prefix": "sk-or-",
+        "color": "purple",
+        "label": "OpenRouter",
+        "aliases": {
+            "openrouter": "openrouter/auto",
+            "or-auto": "openrouter/auto",
+        },
+    },
 }
 
 KODIQA_DIR = os.path.expanduser("~/.kodiqa")
@@ -193,7 +210,7 @@ SETTINGS_FILE = os.path.join(KODIQA_DIR, "settings.json")
 CONFIG_FILE = os.path.join(KODIQA_DIR, "config.json")
 
 # Defaults — all overridable via ~/.kodiqa/config.json
-MAX_ITERATIONS = 15
+MAX_ITERATIONS = 40
 MAX_FILE_SIZE = 100_000
 COMMAND_TIMEOUT = 120
 
@@ -344,6 +361,17 @@ def version_is_newer(latest, current):
 # ── Changelog ──
 # Canonical changelog is CHANGELOG.md — this list powers the /changelog command
 CHANGELOG = [
+    {"version": "v3.19.0", "date": "2026-06-30", "changes": [
+        "Drag-and-drop images/files: dropping a file into the terminal now attaches it (images go to the model to view) instead of erroring as an 'unknown command'. Handles the backslash-escaped/quoted paths terminals paste, and multiple files; attaches to your next message.",
+        "Default max_iterations raised 15 -> 40 so long multi-step tasks (big refactors, many edits) don't stop early; still overridable in config.json, and /budget remains the cost backstop.",
+        "Live task list (todo_write tool): the model maintains a checkable plan during long multi-step tasks and re-grounds each turn — rendered as a panel. Biggest quality lever for long runs, especially on local models. Works for native + Ollama providers; resets on /clear.",
+        "AGENTS.md interop: Kodiqa now reads the cross-tool AGENTS.md project-instructions standard (walking up to the repo root; nearest wins), with CLAUDE.md as a fallback — so it respects instruction files already present in repos set up for other agents.",
+        "OpenRouter provider: add an openrouter key (/key openrouter) to reach hundreds of models by their vendor/model id (auto-discovered; openrouter/auto routes for you). Its /models also reports context_length, so the context window is auto-detected.",
+        "/effort dial: set reasoning effort low/medium/high — applied to OpenAI reasoning models (o-series/gpt-5) and OpenRouter; other providers use their default.",
+        "/recommend refreshed: adds Devstral (Mistral×OpenHands agentic coder) and the expert-pruned Cerebras Qwen3-Coder-REAP-25B-A3B (~coding-lossless, ~20% lighter), each fit-annotated; pulls via the HuggingFace GGUF fallback.",
+        "Per-persona model binding: /persona <name> <model> binds a model to a persona so switching personas auto-switches the model (e.g. a strong model for architect, a cheap one for code). Persisted.",
+        "Per-category auto-approve: /approve write|command|delete|clipboard [on|off] auto-approves a whole category without dropping to full 'auto' mode — finer than the 3 permission modes.",
+    ]},
     {"version": "v3.18.2", "date": "2026-06-30", "changes": [
         "Context window limits are now auto-detected instead of hardcoded: read live from the provider's /models API where reported (Groq context_window, Mistral max_context_length, OpenRouter context_length) and from 'ollama show' for local models; OpenAI/DeepSeek/Qwen/Claude (which don't expose it via API) use a maintained table — DeepSeek corrected from a stale 64K to 1,000,000 (deepseek-v4). Override any of them in config.json via \"context_limits\": {\"deepseek\": 1000000}. Fixes the auto-compact warning firing far too early on large-context models.",
         "Fix (Claude path): the mixed-history / 400-no-failover fixes from v3.18.1 are now applied to the Claude API too — _build_claude_messages enforces the tool_use/tool_result invariant defensively (drops the 'review'/'lint' orphan ids that 400'd every Claude edit turn, converts OpenAI-format turns from failover), and a Claude 400/422 no longer cascades through failover.",
@@ -725,6 +753,11 @@ path: /absolute/path/to/file
 [ACTION: multi_edit]
 path: /absolute/path/to/file
 edits: [{{"old_string": "find this", "new_string": "replace with"}}, ...]
+[/ACTION]
+
+### Task List (track multi-step work; send the full updated list each time)
+[ACTION: todo_write]
+todos: [{{"content": "explore the codebase", "status": "completed"}}, {{"content": "write the fix", "status": "in_progress"}}, {{"content": "run tests", "status": "pending"}}]
 [/ACTION]
 
 ### Clipboard
