@@ -4,6 +4,17 @@ All notable changes to Kodiqa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.18.2] - 2026-06-30
+
+Context-window auto-detection, plus the Claude-side companion to the v3.18.1 provider fixes.
+
+### Added
+- **Context window limits are auto-detected each run instead of hardcoded.** Resolution order, most authoritative first: (1) your `context_limits` override in `~/.kodiqa/config.json` (per-model or per-provider); (2) the official value from the provider's own `/models` API — **Groq** (`context_window`), **Mistral** (`max_context_length`), and **OpenRouter** (`context_length`) report it, and **local Ollama** models read it from `ollama show` (`model_info.*.context_length`); (3) a maintained fallback table for **OpenAI / DeepSeek / Qwen / Claude**, which don't expose it via API. Everything reads warm caches (no per-turn network calls) and is offline-safe.
+
+### Fixed
+- **DeepSeek context window corrected from a stale 64K to 1,000,000** (deepseek-v4-pro/flash). The auto-compact warning was firing at ~45K and would start summarizing the conversation ~16× sooner than necessary. (You can still cap it lower via `context_limits` to control cost.)
+- **Claude path: the v3.18.1 mixed-history / 400-no-failover fixes now apply to the Claude API too.** `_build_claude_messages` enforces Anthropic's tool_use/tool_result invariant defensively — it drops the `"review"`/`"lint"` orphan tool-result ids that would 400 every Claude edit/lint turn, converts OpenAI-format turns left by cross-provider failover (instead of silently dropping them), and backfills unanswered tool_use blocks. A Claude 400/422 also no longer cascades through failover.
+
 ## [3.18.1] - 2026-06-30
 
 Bug fixes for OpenAI-compatible providers (DeepSeek, OpenAI, Groq, Mistral, Qwen).

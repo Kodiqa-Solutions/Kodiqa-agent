@@ -2785,16 +2785,76 @@ class Kodiqa:
                         total += len(str(block.get("content", "")))
         return total // 4
 
+    # Rough per-provider context windows (tokens). These are conservative caps used
+    # only to drive the auto-compact warning, NOT a hard API limit. Override any of
+    # them in ~/.kodiqa/config.json via "context_limits": {"deepseek": 1000000, ...}.
+    _PROVIDER_CONTEXT_LIMITS = {
+        "qwen": 1_000_000,
+        "openai": 128_000,
+        "deepseek": 1_000_000,  # DeepSeek-V4-pro/flash = 1M (was 64K for the now-deprecated V2.5-era deepseek-chat)
+        "groq": 131_072,
+        "mistral": 128_000,
+    }
+
+    def _live_model_context(self):
+        """Context window for the current model as reported by its provider's
+        /models API (Groq/Mistral/OpenRouter expose it), from the cached fetch.
+        Returns an int or None. Never triggers a network call itself."""
+        cached = getattr(self, "_cached_api_models", {}) or {}
+        v = (cached.get("_context") or {}).get(self.model)
+        return int(v) if isinstance(v, (int, float)) and v > 0 else None
+
+    def _ollama_model_context(self, model):
+        """The model's trained max context length from `ollama show` (model_info
+        '*.context_length'). Cached per model for the session."""
+        cache = getattr(self, "_ollama_ctx_cache", None)
+        if cache is None:
+            cache = self._ollama_ctx_cache = {}
+        if model in cache:
+            return cache[model]
+        ctx = None
+        try:
+            resp = requests.post(f"{OLLAMA_URL}/api/show", json={"model": model}, timeout=4)
+            if resp.status_code == 200:
+                info = resp.json().get("model_info", {}) or {}
+                for k, v in info.items():
+                    if k.endswith(".context_length") and isinstance(v, (int, float)) and v > 0:
+                        ctx = int(v)
+                        break
+        except Exception:
+            _logger.debug("ignored error in _ollama_model_context", exc_info=True)
+        cache[model] = ctx
+        return ctx
+
     def _context_limit(self):
-        """Get context window limit for current model."""
+        """Context window for the current model, used to drive the auto-compact
+        warning. Detection order, most authoritative first:
+          1. an explicit per-model / per-provider override in config "context_limits"
+          2. the official value from the provider's /models API (Groq/Mistral/
+             OpenRouter), or `ollama show` for local models
+          3. a maintained per-provider fallback table (OpenAI/DeepSeek/Qwen/Claude
+             don't report it via API, and these change rarely)
+        """
+        overrides = self.config.get("context_limits", {}) or {}
+        if self.model in overrides:
+            return int(overrides[self.model])
+
         if is_claude_model(self.model):
-            return 200_000
+            return overrides.get("claude") or self._live_model_context() or 200_000
+
         provider = self._get_provider_for_model(self.model)
         if provider:
-            # Provider-specific limits
-            limits = {"qwen": 1_000_000, "openai": 128_000, "deepseek": 64_000, "groq": 32_768, "mistral": 128_000}
-            return limits.get(provider, 128_000)
-        return self.config.get("auto_compact_threshold", 80000) * 2  # rough Ollama limit
+            if provider in overrides:
+                return int(overrides[provider])
+            return self._live_model_context() or self._PROVIDER_CONTEXT_LIMITS.get(provider, 128_000)
+
+        # Local Ollama model. The window Ollama actually honours is num_ctx if the
+        # user set one (requests past it are silently truncated), otherwise fall back
+        # to the model's trained max from `ollama show`, then the old heuristic.
+        num_ctx = self.settings.get("ollama_num_ctx")
+        if num_ctx:
+            return int(num_ctx)
+        return self._ollama_model_context(self.model) or self.config.get("auto_compact_threshold", 80000) * 2
 
     def _auto_compact_if_needed(self):
         """Auto-compact when context approaches provider limit. Warn at 70%, compact at 85%."""

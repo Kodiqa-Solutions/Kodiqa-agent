@@ -344,6 +344,10 @@ def version_is_newer(latest, current):
 # ── Changelog ──
 # Canonical changelog is CHANGELOG.md — this list powers the /changelog command
 CHANGELOG = [
+    {"version": "v3.18.2", "date": "2026-06-30", "changes": [
+        "Context window limits are now auto-detected instead of hardcoded: read live from the provider's /models API where reported (Groq context_window, Mistral max_context_length, OpenRouter context_length) and from 'ollama show' for local models; OpenAI/DeepSeek/Qwen/Claude (which don't expose it via API) use a maintained table — DeepSeek corrected from a stale 64K to 1,000,000 (deepseek-v4). Override any of them in config.json via \"context_limits\": {\"deepseek\": 1000000}. Fixes the auto-compact warning firing far too early on large-context models.",
+        "Fix (Claude path): the mixed-history / 400-no-failover fixes from v3.18.1 are now applied to the Claude API too — _build_claude_messages enforces the tool_use/tool_result invariant defensively (drops the 'review'/'lint' orphan ids that 400'd every Claude edit turn, converts OpenAI-format turns from failover), and a Claude 400/422 no longer cascades through failover.",
+    ]},
     {"version": "v3.18.1", "date": "2026-06-30", "changes": [
         "Fix: DeepSeek/OpenAI-compatible providers no longer 400 with \"Messages with role 'tool' must be a response to a preceding message with 'tool_calls'\" — message history is now normalized before sending (Claude tool_use/tool_result blocks are converted to OpenAI tool_calls/tool messages, orphan tool messages are dropped, and unanswered tool_calls get a stub reply), so mixed-format history from cross-provider failover, an interrupt, or compaction can't produce an invalid request.",
         "Fix: a 400/422 (malformed request) no longer triggers failover — it would fail identically on every provider, so a valid paid provider (e.g. DeepSeek) was silently cascading down to the next one (e.g. Qwen's free-quota wall). The real error is surfaced instead; transient failures (401/429/5xx/network) still fail over.",

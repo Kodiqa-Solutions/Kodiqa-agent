@@ -5,6 +5,8 @@ import sys
 from io import StringIO
 from unittest.mock import MagicMock, patch
 
+from kodiqa import Kodiqa
+
 
 class TestStreamWriterThinking:
     """Tests for <think>...</think> block handling in StreamWriter."""
@@ -118,6 +120,70 @@ class TestContextLimit:
         # Local model is neither Claude nor any API provider
         assert not is_claude_model("qwen2.5-coder:7b")
         assert get_openai_provider("qwen2.5-coder:7b") is None
+
+    def _agent(self, model, provider, config=None, cached=None, settings=None):
+        k = MagicMock()
+        k.model = model
+        k.config = config or {}
+        k.settings = settings or {}
+        k._cached_api_models = cached or {}
+        k._get_provider_for_model = lambda m: provider
+        k._PROVIDER_CONTEXT_LIMITS = Kodiqa._PROVIDER_CONTEXT_LIMITS
+        k._live_model_context = lambda: Kodiqa._live_model_context(k)
+        return k
+
+    def test_deepseek_is_one_million_not_stale_64k(self):
+        # Regression: deepseek-v4 has a 1M window; the old hardcoded 64K warned far too early.
+        k = self._agent("deepseek-v4-pro", "deepseek")
+        assert Kodiqa._context_limit(k) == 1_000_000
+
+    def test_live_api_context_overrides_table(self):
+        # Groq/Mistral/OpenRouter report context via /models — the official number
+        # must win over the fallback table.
+        cached = {"_context": {"llama-3.3-70b-versatile": 131072}}
+        k = self._agent("llama-3.3-70b-versatile", "groq", cached=cached)
+        assert Kodiqa._context_limit(k) == 131072
+
+    def test_config_override_beats_live(self):
+        cached = {"_context": {"deepseek-v4-pro": 1_000_000}}
+        k = self._agent("deepseek-v4-pro", "deepseek",
+                        {"context_limits": {"deepseek": 500_000}}, cached=cached)
+        assert Kodiqa._context_limit(k) == 500_000
+
+    def test_per_model_override_wins(self):
+        k = self._agent("deepseek-v4-pro", "deepseek",
+                        {"context_limits": {"deepseek-v4-pro": 250_000}})
+        assert Kodiqa._context_limit(k) == 250_000
+
+    def test_claude_override(self):
+        k = MagicMock()
+        k.model = "claude-sonnet-4-6"
+        k.config = {"context_limits": {"claude": 1_000_000}}
+        k._cached_api_models = {}
+        k._live_model_context = lambda: Kodiqa._live_model_context(k)
+        assert Kodiqa._context_limit(k) == 1_000_000
+
+    def test_unknown_provider_falls_back(self):
+        k = self._agent("some-new-model", "newprov")
+        assert Kodiqa._context_limit(k) == 128_000
+
+    def test_ollama_uses_configured_num_ctx(self):
+        k = self._agent("qwen2.5-coder:7b", None, settings={"ollama_num_ctx": 32768})
+        assert Kodiqa._context_limit(k) == 32768
+
+    def test_ollama_falls_back_to_model_max(self):
+        k = self._agent("qwen2.5-coder:7b", None)
+        k._ollama_model_context = lambda m: 131072
+        assert Kodiqa._context_limit(k) == 131072
+
+    def test_extract_context_len_handles_provider_key_variants(self):
+        from model_registry import _extract_context_len
+        assert _extract_context_len({"context_window": 131072}) == 131072      # Groq
+        assert _extract_context_len({"max_context_length": 128000}) == 128000  # Mistral
+        assert _extract_context_len({"context_length": 1000000}) == 1000000    # OpenRouter
+        assert _extract_context_len({"capabilities": {"context_length": 200000}}) == 200000
+        assert _extract_context_len({"id": "x"}) is None                       # OpenAI/DeepSeek
+        assert _extract_context_len({"context_length": True}) is None          # bool guard
 
 
 class TestBranching:

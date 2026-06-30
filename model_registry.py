@@ -22,6 +22,26 @@ import logging
 _logger = logging.getLogger("kodiqa")
 
 
+def _extract_context_len(m):
+    """Pull a model's context window from a /models entry, if the provider reports
+    one. Providers disagree on the key (Groq: context_window, Mistral:
+    max_context_length, OpenRouter: context_length, vLLM: max_model_len), and some
+    nest it under 'capabilities'. Returns an int or None."""
+    keys = ("context_length", "context_window", "max_context_length", "max_model_len")
+    sources = [m]
+    caps = m.get("capabilities")
+    if isinstance(caps, dict):
+        sources.append(caps)
+    for src in sources:
+        for k in keys:
+            v = src.get(k)
+            if isinstance(v, bool):
+                continue
+            if isinstance(v, (int, float)) and v > 0:
+                return int(v)
+    return None
+
+
 class ModelRegistry:
     def __init__(self, agent):
         self.agent = agent
@@ -58,8 +78,11 @@ class ModelRegistry:
                     claude_models.sort()
             except Exception:
                 _logger.debug("ignored error in fetch_api_models", exc_info=True)
-        # Fetch all OpenAI-compatible provider models
-        result = {"claude": claude_models, "_ts": time.time()}
+        # Fetch all OpenAI-compatible provider models. "_context" maps model id ->
+        # context window for providers that report it (Groq/Mistral/OpenRouter), so
+        # _context_limit can use the official number instead of a hardcoded guess.
+        result = {"claude": claude_models, "_ts": time.time(), "_context": {}}
+        ctx_map = result["_context"]
         for prov_name, prov in OPENAI_COMPAT_PROVIDERS.items():
             key = self.agent.api_keys.get(prov_name, "")
             if not key:
@@ -78,6 +101,9 @@ class ModelRegistry:
                         mid = m.get("id", "")
                         if mid:
                             models.append(mid)
+                            ctx = _extract_context_len(m)
+                            if ctx:
+                                ctx_map[mid] = ctx
                     models.sort()
             except Exception:
                 _logger.debug("ignored error in fetch_api_models", exc_info=True)
