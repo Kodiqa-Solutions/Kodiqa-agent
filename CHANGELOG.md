@@ -4,6 +4,20 @@ All notable changes to Kodiqa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.19.1] - 2026-06-30
+
+A correctness/UX bug-fix sweep (the "Tier-0" batch).
+
+### Fixed
+- **LSP diagnostics actually work.** `diagnostics()` was a no-op stub returning the string *"Diagnostics requested. Check LSP server output."*; it now reads the async `textDocument/publishDiagnostics` notification (via a deadline-bounded select/os.read message reader) and returns a real list of LSP Diagnostic objects. New **`/lsp diagnostics <file>`** renders them (error/warn/info with line:col), and the editor-bridge `GET /diagnostics` endpoint now returns the documented list shape instead of a sentence.
+- **MCP stdio channel no longer desyncs.** `_send` returned the first line it read as the response; a server notification (log/progress) or server-initiated request arriving before the actual response was mistaken for it, permanently shifting every subsequent reply by one. `_send` now correlates on JSON-RPC `id` and skips notifications, server requests, and non-JSON log lines.
+- **Transient failover no longer sticks.** `_stream_native_with_failover` switched `self.model` to the fallback provider and never restored it, silently moving you off your chosen model for the rest of the session. The model is now restored after the turn (the primary may have recovered).
+- **`/embed` and `/rag` preflight the embedding model.** They now check that `nomic-embed-text` is installed and offer to pull it, instead of silently reporting `Embedded 0 files` when it's missing.
+- **`/compact` on Claude** no longer discards its summary instruction (`_claude_nostream` now honors the passed `messages`), and the context estimate accounts for images + system/tool-schema overhead so auto-compact triggers before the window overflows.
+
+### Changed
+- **UX polish:** the `/search` engine choice persists across sessions; `/voice` checks for an OpenAI key up front (and writes to the system temp dir, not a fixed `/tmp` path); file-watch `#AI:` triggers print a hint to press Enter to run them; and the regex (no-tree-sitter) repo map labels Java/C symbols by their keyword/type instead of a leading `public`/`static` modifier.
+
 ## [3.19.0] - 2026-06-30
 
 Six quick-win features focused on long-task reliability, interop, and reach.

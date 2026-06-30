@@ -3,6 +3,7 @@
 import json
 import subprocess
 import threading
+import time
 import logging
 
 import requests
@@ -101,23 +102,50 @@ class MCPServer:
             raise result["err"]
         return result.get("line")
 
-    def _send(self, message):
-        """Send a JSON-RPC message and read the response."""
+    def _send(self, message, timeout=30):
+        """Send a JSON-RPC request and read lines until the response whose `id`
+        matches arrives. Servers may emit notifications (logs, progress) or
+        server-initiated requests on the same stdout before/around the response;
+        returning the first line read would mismatch them to the wrong request and
+        permanently desync the channel — so we correlate on id and skip the rest."""
         if not self.process or self.process.poll() is not None:
             return None
         with self._lock:
             self._id += 1
-            message["id"] = self._id
+            req_id = self._id
+            message["id"] = req_id
             try:
                 line = json.dumps(message) + "\n"
                 self.process.stdin.write(line)
                 self.process.stdin.flush()
-                resp_line = self._readline_timeout(30)
-                if resp_line is None:
-                    _logger.warning(f"MCP '{self.name}' timed out waiting for response")
-                    return None
-                if resp_line:
-                    return json.loads(resp_line)
+                deadline = time.time() + timeout
+                while True:
+                    remaining = deadline - time.time()
+                    if remaining <= 0:
+                        _logger.warning(f"MCP '{self.name}' timed out waiting for response to id={req_id}")
+                        return None
+                    resp_line = self._readline_timeout(remaining)
+                    if resp_line is None:
+                        _logger.warning(f"MCP '{self.name}' timed out waiting for response to id={req_id}")
+                        return None
+                    if isinstance(resp_line, bytes):
+                        resp_line = resp_line.decode("utf-8", "replace")
+                    resp_line = resp_line.strip()
+                    if not resp_line:
+                        continue  # blank keep-alive line
+                    try:
+                        msg = json.loads(resp_line)
+                    except (ValueError, TypeError):
+                        # Some servers log non-JSON to stdout — ignore, keep reading.
+                        _logger.debug(f"MCP '{self.name}': skipping non-JSON stdout line")
+                        continue
+                    # Our response: matching id AND not a server-initiated request
+                    # (a request carries 'method'; a response carries result/error).
+                    if msg.get("id") == req_id and "method" not in msg:
+                        return msg
+                    _logger.debug(
+                        f"MCP '{self.name}': skipping out-of-band message "
+                        f"(id={msg.get('id')}, method={msg.get('method')})")
             except Exception as e:
                 _logger.warning(f"MCP '{self.name}' communication error: {e}")
         return None

@@ -164,6 +164,51 @@ class TestStreamInterruptedInit:
         assert resp is None and kind == "openai" and prov == "qwen"
 
 
+class TestFailoverModelRestore:
+    """A transient failover must not permanently move the user off their chosen
+    model — _run_native_chat restores self.model after the turn."""
+
+    def _agent(self, model="claude-sonnet-4-6"):
+        k = MagicMock()
+        k.model = model
+        k.config = {"max_iterations": 40}
+        k.history = []
+        k._pending_files = []
+        k._pending_images = []
+        k._stream_interrupted = False
+        k._append_files_to_text = lambda msg, files: msg
+        k._build_system_prompt = lambda t: "SYS"
+        k._assistant_msg = lambda kind, text, tcs: {"role": "assistant", "content": text}
+        return k
+
+    def test_restored_after_failover(self):
+        k = self._agent()
+
+        def fake_stream(kind, provider, sp):
+            k.model = "deepseek-chat"  # failover switched the active model
+            return {"text": "hi", "tool_calls": []}, "openai", "deepseek"
+        k._stream_native_with_failover = fake_stream
+        Kodiqa._run_native_chat(k, "hello", "claude")
+        assert k.model == "claude-sonnet-4-6"  # restored to the user's choice
+
+    def test_no_change_when_no_failover(self):
+        k = self._agent()
+        k._stream_native_with_failover = lambda kind, provider, sp: (
+            {"text": "ok", "tool_calls": []}, "claude", None)
+        Kodiqa._run_native_chat(k, "hi", "claude")
+        assert k.model == "claude-sonnet-4-6"
+
+    def test_restored_even_on_stream_failure(self):
+        k = self._agent()
+
+        def fake_stream(kind, provider, sp):
+            k.model = "qwen3-max"
+            return None, "openai", "qwen"  # all providers failed after switching
+        k._stream_native_with_failover = fake_stream
+        Kodiqa._run_native_chat(k, "hello", "claude")
+        assert k.model == "claude-sonnet-4-6"  # finally-block restores regardless
+
+
 class TestOpenAIMessageInvariant:
     """_build_openai_messages must produce a structurally valid OpenAI history —
     every `tool` message responds to a preceding assistant `tool_calls`, every

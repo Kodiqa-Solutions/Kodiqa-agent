@@ -186,6 +186,43 @@ class TestContextLimit:
         assert _extract_context_len({"context_length": True}) is None          # bool guard
 
 
+class TestEstimateTokens:
+    def _agent(self, history, last=0):
+        k = MagicMock()
+        k.history = history
+        k._last_context_tokens = last
+        return k
+
+    def test_uses_last_context_when_available(self):
+        k = self._agent([], last=5000)
+        assert Kodiqa._estimate_tokens(k) == 5000
+
+    def test_text_plus_baseline(self):
+        k = self._agent([{"role": "user", "content": "a" * 400}])
+        assert Kodiqa._estimate_tokens(k) == 400 // 4 + 2000
+
+    def test_images_costed_not_by_base64_length(self):
+        # a huge base64 image must NOT be counted as chars/4 (~250k tokens) — ~1k/image.
+        k = self._agent([{"role": "user", "content": [
+            {"type": "image", "source": {"data": "x" * 1_000_000}}]}])
+        assert Kodiqa._estimate_tokens(k) == 1000 + 2000
+
+
+class TestClaudeNostreamMessages:
+    def test_build_claude_messages_honors_passed_history(self):
+        k = MagicMock()
+        k.history = [{"role": "user", "content": "REAL HISTORY"}]
+        out = Kodiqa._build_claude_messages(k, [{"role": "user", "content": "PASSED IN"}])
+        blob = str(out)
+        assert "PASSED IN" in blob and "REAL HISTORY" not in blob
+
+    def test_build_claude_messages_defaults_to_self_history(self):
+        k = MagicMock()
+        k.history = [{"role": "user", "content": "FROM HISTORY"}]
+        out = Kodiqa._build_claude_messages(k)
+        assert "FROM HISTORY" in str(out)
+
+
 class TestBranching:
     """Tests for conversation branching logic."""
 
@@ -266,8 +303,8 @@ class TestContextEstimate:
         k = MagicMock()
         k._last_context_tokens = 0
         k.history = [{"role": "user", "content": "x" * 40}]
-        # char/4 heuristic, NOT a cumulative session counter
-        assert Kodiqa._estimate_tokens(k) == 10
+        # char/4 heuristic (NOT a cumulative session counter) + ~2k system/tools baseline
+        assert Kodiqa._estimate_tokens(k) == 10 + 2000
 
 
 class TestCostTable:

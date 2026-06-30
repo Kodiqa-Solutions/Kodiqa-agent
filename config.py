@@ -361,6 +361,14 @@ def version_is_newer(latest, current):
 # ── Changelog ──
 # Canonical changelog is CHANGELOG.md — this list powers the /changelog command
 CHANGELOG = [
+    {"version": "v3.19.1", "date": "2026-06-30", "changes": [
+        "Fix: LSP diagnostics actually work now — the client reads the async publishDiagnostics notification (it was a no-op stub returning a sentence) and returns a real list; new '/lsp diagnostics <file>' renders them, and the editor-bridge /diagnostics endpoint now returns the documented list shape.",
+        "Fix: MCP stdio servers no longer desync — _send correlates responses by JSON-RPC id and skips notifications / server-initiated requests / non-JSON log lines (a notification arriving before the response used to be returned as the result, permanently shifting every later reply by one).",
+        "Fix: a transient cross-provider failover no longer permanently switches your model — self.model is restored after the turn so the next message tries your chosen provider again.",
+        "Fix: /embed and /rag preflight the local embedding model (nomic-embed-text) and offer to pull it, instead of silently indexing 0 files when it's missing.",
+        "Fix: /compact on Claude no longer drops its summary instruction (_claude_nostream now honors the passed messages); context estimate now accounts for images + system/tool-schema overhead so auto-compact triggers in time.",
+        "UX: search-engine choice persists across sessions; /voice checks for an OpenAI key before recording (and uses the system temp dir, not a fixed /tmp path); file-watch #AI triggers now tell you to press Enter to run them; the no-tree-sitter repo map labels Java/C symbols correctly (keyword, not 'public'/'static').",
+    ]},
     {"version": "v3.19.0", "date": "2026-06-30", "changes": [
         "Drag-and-drop images/files: dropping a file into the terminal now attaches it (images go to the model to view) instead of erroring as an 'unknown command'. Handles the backslash-escaped/quoted paths terminals paste, and multiple files; attaches to your next message.",
         "Default max_iterations raised 15 -> 40 so long multi-step tasks (big refactors, many edits) don't stop early; still overridable in config.json, and /budget remains the cost backstop.",

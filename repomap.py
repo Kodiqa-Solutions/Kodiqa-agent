@@ -66,8 +66,11 @@ class RepoMap:
                     if m:
                         groups = [g for g in m.groups() if g and g.strip()]
                         if groups:
+                            # name is the trailing identifier; kind is the keyword/type
+                            # immediately before it (NOT groups[0], which for Java/C is a
+                            # modifier like "public"/"static" or the return type).
                             name = groups[-1].strip()
-                            kind = groups[0].strip() if len(groups) > 1 else ""
+                            kind = groups[-2].strip() if len(groups) > 1 else ""
                             symbols.append({"name": name, "kind": kind, "line": i})
         except Exception:
             _logger.debug("ignored error in _extract_symbols_regex", exc_info=True)

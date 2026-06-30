@@ -98,29 +98,41 @@ class LSPClient:
             self.process = None
             self.language = None
 
-    def diagnostics(self, file_path):
-        """Get diagnostics for a file."""
+    def diagnostics(self, file_path, timeout=4):
+        """Get diagnostics for a file. Returns a list of LSP Diagnostic objects
+        (each has range/severity/message); empty list when there are none.
+
+        Diagnostics arrive as an async `textDocument/publishDiagnostics`
+        notification after `didOpen`, so we open the file then read incoming
+        messages until the matching publish (or timeout)."""
         if not self.process:
-            return "LSP not running."
+            return []
         uri = f"file://{os.path.abspath(file_path)}"
         try:
             with open(file_path, "r") as f:
                 text = f.read()
         except Exception as e:
-            return f"Error reading file: {e}"
+            return [{"severity": 1, "message": f"Error reading file: {e}"}]
 
-        self._send_notification("textDocument/didOpen", {
-            "textDocument": {
-                "uri": uri,
-                "languageId": self.language,
-                "version": 1,
-                "text": text,
-            },
-        })
-        # Wait briefly for diagnostics
         import time
-        time.sleep(1)
-        return "Diagnostics requested. Check LSP server output."
+        with self._lock:
+            self._write({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {"textDocument": {
+                    "uri": uri, "languageId": self.language, "version": 1, "text": text,
+                }},
+            })
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                msg = self._read_message(deadline)
+                if msg is None:
+                    break
+                if msg.get("method") == "textDocument/publishDiagnostics":
+                    params = msg.get("params", {})
+                    if params.get("uri") == uri:
+                        return params.get("diagnostics", [])
+        return []
 
     def definition(self, file_path, line, col):
         """Go to definition."""
@@ -191,33 +203,70 @@ class LSPClient:
         except (BrokenPipeError, OSError):
             pass
 
-    def _read_response(self, msg_id, timeout=5):
-        """Read LSP response for given message ID."""
+    def _read_message(self, deadline):
+        """Read one framed JSON-RPC message before `deadline` (epoch seconds).
+        Returns the parsed dict, or None on timeout/EOF. Uses select+os.read on the
+        raw fd so reads honour the deadline instead of blocking forever when the
+        server is quiet. All stdout reading goes through here (no buffered reads
+        elsewhere) so there's no desync."""
+        import os as _os
+        import select
+        import time
         if not self.process or not self.process.stdout:
             return None
+        fd = self.process.stdout.fileno()
+
+        def _recv(n):
+            buf = b""
+            while len(buf) < n:
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    return None
+                r, _, _ = select.select([fd], [], [], remaining)
+                if not r:
+                    return None
+                try:
+                    chunk = _os.read(fd, n - len(buf))
+                except OSError:
+                    return None
+                if not chunk:
+                    return None
+                buf += chunk
+            return buf
+
+        header = b""
+        while b"\r\n\r\n" not in header:
+            b = _recv(1)
+            if b is None:
+                return None
+            header += b
+        length = None
+        for line in header.decode("utf-8", "replace").split("\r\n"):
+            if line.lower().startswith("content-length:"):
+                try:
+                    length = int(line.split(":", 1)[1].strip())
+                except ValueError:
+                    return None
+                break
+        if not length:
+            return None
+        body = _recv(length)
+        if body is None:
+            return None
+        try:
+            return json.loads(body.decode("utf-8", "replace"))
+        except Exception:
+            return None
+
+    def _read_response(self, msg_id, timeout=5):
+        """Read messages until the response with `msg_id` arrives (skipping
+        notifications and server-initiated requests), or timeout."""
         import time
         deadline = time.time() + timeout
         while time.time() < deadline:
-            try:
-                # Read header
-                header = b""
-                while b"\r\n\r\n" not in header:
-                    byte = self.process.stdout.read(1)
-                    if not byte:
-                        return None
-                    header += byte
-                # Parse content length
-                for line in header.decode("utf-8").split("\r\n"):
-                    if line.lower().startswith("content-length:"):
-                        length = int(line.split(":")[1].strip())
-                        break
-                else:
-                    continue
-                # Read body
-                body = self.process.stdout.read(length)
-                resp = json.loads(body.decode("utf-8"))
-                if resp.get("id") == msg_id:
-                    return resp.get("result")
-            except Exception:
+            msg = self._read_message(deadline)
+            if msg is None:
                 return None
+            if msg.get("id") == msg_id:
+                return msg.get("result")
         return None

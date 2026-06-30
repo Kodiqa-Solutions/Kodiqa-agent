@@ -574,6 +574,10 @@ class Kodiqa:
         if g_key and g_cx:
             set_google_api_keys(g_key, g_cx)
             set_search_engine("google_api")
+        # Restore the user's last explicit /search choice (takes precedence).
+        saved_engine = self.settings.get("search_engine")
+        if saved_engine:
+            set_search_engine(saved_engine)
         if self.claude_key:
             self.model = self.settings.get("default_model", "claude-sonnet-4-20250514")
         else:
@@ -738,7 +742,7 @@ class Kodiqa:
         ("/search", (), "_cmd_search", "Tools & UI", "", "Switch search engine"),
         ("/config", (), "_cmd_config", "Tools & UI", "", "Show/reload config"),
         ("/env", (), "_cmd_env", "Tools & UI", "", "Show shell environment"),
-        ("/lsp", (), "_cmd_lsp", "Tools & UI", "[start|stop]", "Language Server Protocol"),
+        ("/lsp", (), "_cmd_lsp", "Tools & UI", "[start|stop|diagnostics <file>]", "Language Server Protocol"),
         ("/voice", (), "_cmd_voice", "Tools & UI", "", "Voice input via Whisper"),
         ("/plugins", (), "_cmd_plugins", "Tools & UI", "", "List/reload custom tool plugins"),
         ("/theme", (), "_cmd_theme", "Tools & UI", "<name>", "Switch UI theme"),
@@ -2017,10 +2021,10 @@ class Kodiqa:
             self.console.print(f"Google API: {api_status}")
             self.console.print("[dim]Usage: /search google | /search duckduckgo | /search api[/]")
         elif arg.lower() in ("google", "g"):
-            set_search_engine("google")
+            self._set_search_engine_persistent("google")
             self.console.print("[green]Switched to Google search (scraping, no API key)[/]")
         elif arg.lower() in ("duckduckgo", "ddg", "duck"):
-            set_search_engine("duckduckgo")
+            self._set_search_engine_persistent("duckduckgo")
             self.console.print("[green]Switched to DuckDuckGo search[/]")
         elif arg.lower() in ("api", "google_api", "gapi"):
             g_key, g_cx = get_google_api_keys()
@@ -2039,15 +2043,21 @@ class Kodiqa:
                     self.settings["google_api_key"] = api_key.strip()
                     self.settings["google_cx"] = cx.strip()
                     save_settings(self.settings)
-                    set_search_engine("google_api")
+                    self._set_search_engine_persistent("google_api")
                     self.console.print("[green]Google API configured and set as search engine![/]")
                 except (EOFError, KeyboardInterrupt):
                     return
             else:
-                set_search_engine("google_api")
+                self._set_search_engine_persistent("google_api")
                 self.console.print("[green]Switched to Google API search (100 free/day)[/]")
         else:
             self.console.print("[red]Unknown engine. Use: /search google | /search duckduckgo | /search api[/]")
+
+    def _set_search_engine_persistent(self, engine):
+        """Switch the search engine and remember it across sessions."""
+        set_search_engine(engine)
+        self.settings["search_engine"] = engine
+        save_settings(self.settings)
 
     def _cmd_config(self, arg):
         if arg.strip().lower() == "reload":
@@ -2921,16 +2931,29 @@ class Kodiqa:
 
     def _estimate_tokens(self):
         """Estimate current context occupancy — use the last request's prompt size if
-        available, else a char-count heuristic. NOT the cumulative session total."""
+        available, else a char-count heuristic. NOT the cumulative session total.
+
+        The heuristic also accounts for the system prompt + tool schemas (always sent)
+        and a rough per-image vision cost, which the raw char-count missed — otherwise
+        a turn with images or big tool schemas could blow the window before auto-compact
+        triggered."""
         if getattr(self, "_last_context_tokens", 0) > 0:
             return self._last_context_tokens
-        total = sum(len(m.get("content", "")) for m in self.history if isinstance(m.get("content"), str))
+        total = 0
+        images = 0
         for m in self.history:
-            if isinstance(m.get("content"), list):
-                for block in m["content"]:
+            c = m.get("content")
+            if isinstance(c, str):
+                total += len(c)
+            elif isinstance(c, list):
+                for block in c:
                     if isinstance(block, dict):
-                        total += len(str(block.get("content", "")))
-        return total // 4
+                        total += len(str(block.get("content", ""))) + len(str(block.get("text", "")))
+                        if block.get("type") in ("image", "image_url"):
+                            images += 1
+        # text ≈ chars/4; + ~1k tokens per image (rough vision cost, NOT base64 length,
+        # which would wildly overcount); + ~2k baseline for system prompt + tool schemas.
+        return total // 4 + images * 1000 + 2000
 
     # Rough per-provider context windows (tokens). These are conservative caps used
     # only to drive the auto-compact warning, NOT a hard API limit. Override any of
@@ -3650,38 +3673,48 @@ class Kodiqa:
 
         _iteration = 0
         _max_iter = self.config.get("max_iterations", 40)
-        while True:
-            _iteration += 1
-            if _iteration > _max_iter:
-                self.console.print(f"[yellow]Reached max iterations ({_max_iter}). Stopping — raise max_iterations in /config if needed.[/]")
-                break
-            system_prompt = self._build_system_prompt(CLAUDE_SYSTEM)
-            # Stream from the active provider; transparently fail over to another
-            # configured provider on a hard failure. kind/provider track whichever
-            # provider actually answered (so the rest of the loop stays in sync).
-            response, kind, provider = self._stream_native_with_failover(kind, provider, system_prompt)
-            if response is None:
-                return
-            if self._stream_interrupted:
+        # Failover may switch self.model to a fallback provider for this turn; restore
+        # the user's chosen model afterward so a transient outage doesn't silently move
+        # them off it for the rest of the session (the primary may have recovered).
+        _original_model = self.model
+        try:
+            while True:
+                _iteration += 1
+                if _iteration > _max_iter:
+                    self.console.print(f"[yellow]Reached max iterations ({_max_iter}). Stopping — raise max_iterations in /config if needed.[/]")
+                    break
+                system_prompt = self._build_system_prompt(CLAUDE_SYSTEM)
+                # Stream from the active provider; transparently fail over to another
+                # configured provider on a hard failure. kind/provider track whichever
+                # provider actually answered (so the rest of the loop stays in sync).
+                response, kind, provider = self._stream_native_with_failover(kind, provider, system_prompt)
+                if response is None:
+                    return
+                if self._stream_interrupted:
+                    text_content = response.get("text", "")
+                    if text_content:
+                        self.history.append(self._assistant_msg(kind, text_content, []))
+                    self._save_session()
+                    return
+
                 text_content = response.get("text", "")
-                if text_content:
-                    self.history.append(self._assistant_msg(kind, text_content, []))
+                tool_calls = response.get("tool_calls", [])
+                self.history.append(self._assistant_msg(kind, text_content, tool_calls))
+
+                if not tool_calls:
+                    self._save_session()
+                    return
+
+                results_list, lint_errors = self._run_tool_calls(tool_calls)
+                self._append_tool_results(kind, results_list)
                 self._save_session()
-                return
-
-            text_content = response.get("text", "")
-            tool_calls = response.get("tool_calls", [])
-            self.history.append(self._assistant_msg(kind, text_content, tool_calls))
-
-            if not tool_calls:
-                self._save_session()
-                return
-
-            results_list, lint_errors = self._run_tool_calls(tool_calls)
-            self._append_tool_results(kind, results_list)
-            self._save_session()
-            if self._maybe_lint_fix(lint_errors):
-                continue
+                if self._maybe_lint_fix(lint_errors):
+                    continue
+                # else: loop again so the model responds to the tool results.
+        finally:
+            if self.model != _original_model:
+                self.console.print(f"[dim]↩ back on {_original_model} (failover was temporary).[/]")
+                self.model = _original_model
 
     def _assistant_msg(self, kind, text_content, tool_calls):
         """Build the assistant history entry in the provider's native format."""
@@ -3916,7 +3949,7 @@ class Kodiqa:
         """Claude native tool_use chat — see _run_native_chat for the shared loop."""
         self._run_native_chat(user_msg, "claude")
 
-    def _build_claude_messages(self):
+    def _build_claude_messages(self, history=None):
         """Convert history to Claude API format, enforcing the tool_use/tool_result
         invariant defensively — the mirror of _build_openai_messages.
 
@@ -3930,7 +3963,11 @@ class Kodiqa:
           • role:"tool" / OpenAI    → `tool_result` blocks in a user turn
           • orphan tool_results (e.g. "review"/"lint") are dropped
           • any unanswered tool_use gets a stub tool_result
+
+        `history` defaults to self.history; pass an explicit list (e.g. for the
+        non-streaming compact call) to format a different message sequence.
         """
+        source = self.history if history is None else history
         messages = []
         pending_ids = []  # tool_use ids from the last assistant awaiting a tool_result
 
@@ -3950,7 +3987,7 @@ class Kodiqa:
                                   "content": "[no result returned]"} for tid in pending_ids])
                 pending_ids.clear()
 
-        for msg in self.history:
+        for msg in source:
             role = msg.get("role")
             if role == "system":
                 continue
@@ -4215,7 +4252,9 @@ class Kodiqa:
         """Non-streaming Claude call (for compact)."""
         if not self.claude_key:
             return ""
-        claude_msgs = self._build_claude_messages()
+        # Honor the passed message list (e.g. compact's explicit "summarize" turn)
+        # instead of silently rebuilding from raw history.
+        claude_msgs = self._build_claude_messages(messages)
         try:
             resp = requests.post(
                 CLAUDE_API_URL,
@@ -5612,9 +5651,36 @@ class Kodiqa:
                 self.console.print("[yellow]LSP stopped.[/]")
             else:
                 self.console.print("[dim]No LSP server running.[/]")
+        elif sub in ("diagnostics", "diag", "check"):
+            if not self._lsp_client:
+                self.console.print("[dim]No LSP server. Start one: /lsp start <language>[/]")
+                return
+            target = parts[1] if len(parts) > 1 else None
+            if not target:
+                self.console.print("[dim]Usage: /lsp diagnostics <file>[/]")
+                return
+            path = os.path.abspath(os.path.expanduser(target))
+            if not os.path.isfile(path):
+                self.console.print(f"[red]No such file: {target}[/]")
+                return
+            diags = self._lsp_client.diagnostics(path)
+            if not diags:
+                self.console.print(f"[green]✓ No diagnostics for {os.path.basename(path)}.[/]")
+                return
+            _sev = {1: ("error", "red"), 2: ("warn", "yellow"), 3: ("info", "cyan"), 4: ("hint", "dim")}
+            lines = []
+            for d in diags:
+                label, color = _sev.get(d.get("severity", 1), ("error", "red"))
+                ln = (d.get("range", {}).get("start", {}).get("line", 0)) + 1
+                col = (d.get("range", {}).get("start", {}).get("character", 0)) + 1
+                lines.append(f"[{color}]{label}[/] [dim]{ln}:{col}[/] {d.get('message', '').strip()}")
+            self.console.print(Panel("\n".join(lines),
+                                     title=f"Diagnostics: {os.path.basename(path)} ({len(diags)})",
+                                     border_style="yellow", expand=False))
         else:
             if self._lsp_client:
                 self.console.print(f"[green]LSP running:[/] {self._lsp_client.language}")
+                self.console.print("[dim]  /lsp diagnostics <file>  ·  /lsp stop[/]")
             else:
                 self.console.print("[dim]No LSP server. Usage: /lsp start <language>[/]")
 
@@ -5634,7 +5700,13 @@ class Kodiqa:
         return None
 
     def _handle_voice(self, arg):
-        """Handle /voice command for speech-to-text input."""
+        """Handle /voice command for speech-to-text input (sox record → OpenAI Whisper)."""
+        # Transcription needs an OpenAI key — check up front so we don't record 30s of
+        # audio only to discard it as untranscribable.
+        if not self.api_keys.get("openai", ""):
+            self.console.print("[yellow]/voice needs an OpenAI API key for Whisper transcription.[/] "
+                               "[dim]Add one with /key openai.[/]")
+            return
         # Check for sox
         try:
             subprocess.run(["sox", "--version"], capture_output=True, timeout=5, check=True)
@@ -5642,7 +5714,8 @@ class Kodiqa:
             self.console.print("[red]sox not installed.[/] Install: [cyan]brew install sox[/]")
             return
 
-        tmp_wav = os.path.join("/tmp", "kodiqa_voice.wav")
+        import tempfile
+        tmp_wav = os.path.join(tempfile.gettempdir(), f"kodiqa_voice_{os.getpid()}.wav")
         self.console.print("[bold cyan]Recording...[/] (press Ctrl+C to stop, max 30s)")
         try:
             proc = subprocess.Popen(
@@ -5680,7 +5753,7 @@ class Kodiqa:
                 _logger.debug("ignored error in _handle_voice", exc_info=True)
 
         if not text:
-            self.console.print("[dim]Transcription failed. Need OpenAI API key for Whisper.[/]")
+            self.console.print("[dim]Transcription failed (network or audio issue). Try again.[/]")
             try:
                 os.remove(tmp_wav)
             except OSError:
@@ -5875,6 +5948,9 @@ class Kodiqa:
                             self._ai_trigger_queue.append({
                                 "file": fp, "line": line_num, "instruction": instruction,
                             })
+                            self.console.print(
+                                f"  [dim]↳ press Enter (empty prompt) to run "
+                                f"{len(self._ai_trigger_queue)} queued trigger(s).[/]")
         t = threading.Thread(target=poll_changes, daemon=True)
         t.start()
         self.console.print(f"[green]Watching:[/] {path} [dim](use /watch stop to end)[/]")
@@ -5911,6 +5987,32 @@ class Kodiqa:
         except Exception:
             _logger.debug("ignored error in _remove_ai_trigger", exc_info=True)
 
+    def _ensure_embed_model(self, model="nomic-embed-text"):
+        """For local (Ollama) embeddings, make sure the embed model is installed —
+        otherwise /embed silently indexes 0 files. Offers to pull it. Returns True
+        if the model is usable."""
+        installed = self._installed_ollama_models()
+        if installed is None:
+            self.console.print("[red]Ollama isn't reachable — can't embed locally. "
+                               "Start Ollama, or set an OpenAI key with /key openai.[/]")
+            return False
+        base = lambda n: n.split(":")[0]
+        if any(base(n) == model for n, _ in installed):
+            return True
+        self.console.print(f"[yellow]Embedding model '{model}' isn't installed[/] "
+                           "[dim](needed for local /embed and /rag).[/]")
+        try:
+            ans = Prompt.ask(f"[bold]Pull {model} now?[/]", choices=["y", "n"], default="y")
+        except (EOFError, KeyboardInterrupt):
+            return False
+        if ans != "y":
+            self.console.print(f"[dim]Skipped. Install later with [bold]/pull {model}[/] "
+                               "(or set an OpenAI key for cloud embeddings).[/]")
+            return False
+        self._pull_model(model)
+        installed = self._installed_ollama_models() or []
+        return any(base(n) == model for n, _ in installed)
+
     def _handle_embed(self, arg):
         try:
             from embeddings import EmbeddingStore
@@ -5918,9 +6020,12 @@ class Kodiqa:
             self.console.print("[red]embeddings module not found.[/]")
             return
         db_path = os.path.join(KODIQA_DIR, "embeddings.db")
-        store = EmbeddingStore(db_path)
         target = os.path.abspath(arg.strip()) if arg else self.cwd
-        if self.api_keys.get("openai"):
+        use_openai = bool(self.api_keys.get("openai"))
+        if not use_openai and not self._ensure_embed_model():
+            return
+        store = EmbeddingStore(db_path)
+        if use_openai:
             embed_fn = lambda t: store.embed_openai(t, self.api_keys["openai"])
             self.console.print("[dim]Using OpenAI embeddings[/]")
         else:
@@ -5947,7 +6052,11 @@ class Kodiqa:
         except Exception as e:
             self.console.print(f"[red]Embedding error: {e}[/]")
         store.close()
-        self.console.print(f"[green]Embedded {count} files.[/]")
+        if count:
+            self.console.print(f"[green]Embedded {count} files.[/]")
+        else:
+            self.console.print("[yellow]Embedded 0 files.[/] "
+                               "[dim]No matching files under the path, or they were unreadable/too large.[/]")
 
     def _handle_rag(self, query):
         try:
@@ -5958,6 +6067,8 @@ class Kodiqa:
         db_path = os.path.join(KODIQA_DIR, "embeddings.db")
         if not os.path.isfile(db_path):
             self.console.print("[yellow]No embeddings yet. Run /embed first.[/]")
+            return
+        if not self.api_keys.get("openai") and not self._ensure_embed_model():
             return
         store = EmbeddingStore(db_path)
         try:

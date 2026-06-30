@@ -78,6 +78,37 @@ class TestMCPServer:
         result = s._send({"jsonrpc": "2.0", "method": "test"})
         assert result == response
 
+    def test_send_skips_notification_before_response(self):
+        # A server notification arriving before the response must NOT be mistaken
+        # for the response (the desync bug) — _send correlates on id.
+        s = MCPServer("test", "cmd")
+        s.process = MagicMock()
+        s.process.poll.return_value = None
+        notif = {"jsonrpc": "2.0", "method": "notifications/message", "params": {"level": "info"}}
+        response = {"jsonrpc": "2.0", "id": 1, "result": {"ok": True}}
+        s.process.stdout.readline.side_effect = [json.dumps(notif) + "\n", json.dumps(response) + "\n"]
+        assert s._send({"jsonrpc": "2.0", "method": "test"}) == response
+
+    def test_send_skips_server_request_with_same_id(self):
+        # A server-initiated request can share our numeric id; it has a 'method',
+        # so it's a request not our response — must be skipped.
+        s = MCPServer("test", "cmd")
+        s.process = MagicMock()
+        s.process.poll.return_value = None
+        server_req = {"jsonrpc": "2.0", "id": 1, "method": "window/workDoneProgress/create", "params": {}}
+        response = {"jsonrpc": "2.0", "id": 1, "result": "ok"}
+        s.process.stdout.readline.side_effect = [json.dumps(server_req) + "\n", json.dumps(response) + "\n"]
+        assert s._send({"jsonrpc": "2.0", "method": "test"}) == response
+
+    def test_send_skips_non_json_and_blank_lines(self):
+        s = MCPServer("test", "cmd")
+        s.process = MagicMock()
+        s.process.poll.return_value = None
+        response = {"jsonrpc": "2.0", "id": 1, "result": 42}
+        s.process.stdout.readline.side_effect = [
+            "\n", "starting up... not json\n", json.dumps(response) + "\n"]
+        assert s._send({"jsonrpc": "2.0", "method": "test"}) == response
+
     def test_notify_no_process(self):
         s = MCPServer("test", "cmd")
         s._notify({"jsonrpc": "2.0", "method": "test"})  # should not raise
