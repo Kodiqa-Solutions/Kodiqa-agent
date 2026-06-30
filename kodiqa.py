@@ -3687,25 +3687,102 @@ class Kodiqa:
         self._run_native_chat(user_msg, "claude")
 
     def _build_claude_messages(self):
-        """Convert history to Claude API format. Handles content blocks properly."""
+        """Convert history to Claude API format, enforcing the tool_use/tool_result
+        invariant defensively — the mirror of _build_openai_messages.
+
+        Anthropic rejects any tool_result whose tool_use_id has no matching tool_use
+        in the preceding assistant turn, and any tool_use left without a tool_result.
+        History can be messy: the batch-review/lint pseudo-results carry the literal
+        ids "review"/"lint" (no real tool_use), and a turn that ran on an OpenAI-compat
+        provider (e.g. via failover) stores assistant `tool_calls` + role:"tool"
+        messages instead of Claude blocks. So we normalize rather than trust it:
+          • OpenAI `tool_calls`     → assistant `tool_use` blocks
+          • role:"tool" / OpenAI    → `tool_result` blocks in a user turn
+          • orphan tool_results (e.g. "review"/"lint") are dropped
+          • any unanswered tool_use gets a stub tool_result
+        """
         messages = []
+        pending_ids = []  # tool_use ids from the last assistant awaiting a tool_result
+
+        def add_user_blocks(blocks):
+            if not blocks:
+                return
+            # Merge into a trailing user turn so tool_results + text coalesce and we
+            # never emit two consecutive user messages (which Anthropic rejects).
+            if messages and messages[-1]["role"] == "user" and isinstance(messages[-1]["content"], list):
+                messages[-1]["content"].extend(blocks)
+            else:
+                messages.append({"role": "user", "content": list(blocks)})
+
+        def backfill_pending():
+            if pending_ids:
+                add_user_blocks([{"type": "tool_result", "tool_use_id": tid,
+                                  "content": "[no result returned]"} for tid in pending_ids])
+                pending_ids.clear()
+
         for msg in self.history:
-            role = msg["role"]
-            content = msg["content"]
+            role = msg.get("role")
             if role == "system":
                 continue
-            if role not in ("user", "assistant"):
-                role = "user"
-            # Handle string content and list content (tool_use/tool_result blocks)
-            if isinstance(content, str):
-                # Merge consecutive same-role text messages
-                if messages and messages[-1]["role"] == role and isinstance(messages[-1]["content"], str):
-                    messages[-1]["content"] += "\n\n" + content
+            content = msg.get("content")
+
+            if role == "assistant":
+                backfill_pending()  # close the prior turn's tool_uses first
+                if isinstance(content, list):
+                    blocks = content
+                    ids = [b.get("id", "") for b in blocks
+                           if isinstance(b, dict) and b.get("type") == "tool_use"]
                 else:
-                    messages.append({"role": role, "content": content})
-            elif isinstance(content, list):
-                # Content blocks (tool_use or tool_result) - don't merge
-                messages.append({"role": role, "content": content})
+                    blocks = []
+                    if content:
+                        blocks.append({"type": "text", "text": content})
+                    ids = []
+                    for tc in (msg.get("tool_calls") or []):
+                        try:
+                            args = json.loads(tc["function"]["arguments"] or "{}")
+                        except (ValueError, KeyError, TypeError):
+                            args = {}
+                        tid = tc.get("id", "")
+                        blocks.append({"type": "tool_use", "id": tid,
+                                       "name": tc.get("function", {}).get("name", ""), "input": args})
+                        ids.append(tid)
+                if not blocks:
+                    continue  # empty assistant turn — skip
+                messages.append({"role": "assistant", "content": blocks})
+                pending_ids = ids
+
+            elif role == "tool":
+                # OpenAI-format tool result — valid only if it answers an open call
+                tid = msg.get("tool_call_id", "")
+                if tid in pending_ids:
+                    add_user_blocks([{"type": "tool_result", "tool_use_id": tid,
+                                      "content": msg.get("content", "")}])
+                    pending_ids.remove(tid)
+                else:
+                    _logger.debug("dropping orphan tool message id=%r (no matching tool_use)", tid)
+
+            else:  # user (or anything else, coerced to user)
+                if isinstance(content, list):
+                    kept, other = [], []
+                    for b in content:
+                        if isinstance(b, dict) and b.get("type") == "tool_result":
+                            tid = b.get("tool_use_id", "")
+                            if tid in pending_ids:
+                                kept.append(b)
+                                pending_ids.remove(tid)
+                            else:
+                                _logger.debug("dropping orphan tool_result id=%r", tid)
+                        else:
+                            other.append(b)
+                    add_user_blocks(kept)
+                    if other:
+                        backfill_pending()  # text after tool_results closes the tool turn
+                        add_user_blocks(other)
+                else:
+                    backfill_pending()
+                    add_user_blocks([{"type": "text", "text": content or ""}])
+
+        backfill_pending()
         # Ensure starts with user
         if not messages or messages[0]["role"] != "user":
             messages.insert(0, {"role": "user", "content": "Hello"})
@@ -3752,6 +3829,11 @@ class Kodiqa:
                 return None
             if resp.status_code >= 400:
                 self.console.print(f"[red]Claude API error {resp.status_code}: {resp.text[:200]}[/]")
+                # A 400/422 is a malformed request (bad message structure, oversized
+                # context) — it fails identically on every provider, so don't cascade
+                # it through failover. Mirrors the OpenAI-compat path.
+                if resp.status_code in (400, 422):
+                    self._stream_no_failover = True
                 return None
         except Exception as e:
             if _logger:

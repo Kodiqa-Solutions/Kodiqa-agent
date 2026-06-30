@@ -245,3 +245,95 @@ class TestOpenAIMessageInvariant:
         msgs = self._build(history)
         self._assert_valid(msgs)
         assert any(m["role"] == "tool" and m["tool_call_id"] == "call_0" for m in msgs)
+
+
+class TestClaudeMessageInvariant:
+    """_build_claude_messages must enforce Anthropic's tool_use/tool_result invariant
+    defensively (mirror of the OpenAI builder): every tool_result references a real
+    preceding tool_use, every tool_use gets a tool_result, OpenAI-format turns from
+    failover are converted not dropped, and the 'review'/'lint' pseudo-result ids
+    (which have no real tool_use) are dropped instead of producing a 400."""
+
+    def _build(self, history):
+        k = MagicMock()
+        k.history = history
+        return Kodiqa._build_claude_messages(k)
+
+    def _ids_in(self, blocks, btype, idkey):
+        return {b[idkey] for b in blocks if isinstance(b, dict) and b.get("type") == btype}
+
+    def _assert_valid(self, messages):
+        # roles must alternate (no two consecutive same-role messages)
+        for a, b in zip(messages, messages[1:]):
+            assert a["role"] != b["role"], f"consecutive {a['role']} messages"
+        # every tool_result must reference a tool_use from the immediately prior assistant
+        open_ids = set()
+        for m in messages:
+            blocks = m["content"] if isinstance(m["content"], list) else []
+            if m["role"] == "assistant":
+                open_ids = self._ids_in(blocks, "tool_use", "id")
+            else:
+                for b in blocks:
+                    if isinstance(b, dict) and b.get("type") == "tool_result":
+                        assert b["tool_use_id"] in open_ids, f"orphan tool_result {b}"
+
+    def test_orphan_review_lint_ids_dropped(self):
+        # The exact finding: edit produces a real tool_use, but batch-review and lint
+        # append tool_results with the literal ids "review"/"lint" → must be dropped.
+        history = [
+            {"role": "user", "content": "edit x"},
+            {"role": "assistant", "content": [
+                {"type": "text", "text": "editing"},
+                {"type": "tool_use", "id": "toolu_1", "name": "edit_file", "input": {}},
+            ]},
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "toolu_1", "content": "[queued]"},
+                {"type": "tool_result", "tool_use_id": "review", "content": "Applied"},
+                {"type": "tool_result", "tool_use_id": "lint", "content": "E501"},
+            ]},
+            {"role": "user", "content": "continue"},
+        ]
+        msgs = self._build(history)
+        self._assert_valid(msgs)
+        all_result_ids = set()
+        for m in msgs:
+            if isinstance(m["content"], list):
+                all_result_ids |= self._ids_in(m["content"], "tool_result", "tool_use_id")
+        assert all_result_ids == {"toolu_1"}  # review/lint dropped, real id kept
+
+    def test_openai_format_turn_converted_not_dropped(self):
+        # A turn that ran on an OpenAI-compat provider (failover) stores tool_calls +
+        # role:tool; converting to Claude must preserve them, not drop them.
+        history = [
+            {"role": "user", "content": "read x"},
+            {"role": "assistant", "content": None,
+             "tool_calls": [{"id": "call_0", "type": "function",
+                             "function": {"name": "read_file", "arguments": '{"path":"x"}'}}]},
+            {"role": "tool", "tool_call_id": "call_0", "content": "body"},
+            {"role": "user", "content": "continue"},
+        ]
+        msgs = self._build(history)
+        self._assert_valid(msgs)
+        asst = [m for m in msgs if m["role"] == "assistant"][0]
+        assert self._ids_in(asst["content"], "tool_use", "id") == {"call_0"}
+
+    def test_unanswered_tool_use_backfilled(self):
+        history = [
+            {"role": "user", "content": "edit"},
+            {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "toolu_9", "name": "edit_file", "input": {}},
+            ]},
+            {"role": "user", "content": "never mind"},
+        ]
+        msgs = self._build(history)
+        self._assert_valid(msgs)
+        result_ids = set()
+        for m in msgs:
+            if isinstance(m["content"], list):
+                result_ids |= self._ids_in(m["content"], "tool_result", "tool_use_id")
+        assert "toolu_9" in result_ids  # stub backfilled
+
+    def test_starts_with_user(self):
+        history = [{"role": "assistant", "content": "hi"}]
+        msgs = self._build(history)
+        assert msgs[0]["role"] == "user"
