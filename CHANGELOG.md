@@ -4,6 +4,11 @@ All notable changes to Kodiqa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.19.5] - 2026-07-01
+
+### Fixed
+- **An empty model response no longer breaks the session.** If the model returned a turn with no content and no tool calls, it was stored as a content-less assistant message — which OpenAI-compatible APIs reject (`Invalid assistant message: content or tool_calls must be set`), so every subsequent turn 400'd mid-conversation. Kodiqa no longer stores such a degenerate turn, and the message builder drops any already sitting in history so a stuck session recovers on the next message/relaunch.
+
 ## [3.19.4] - 2026-07-01
 
 ### Fixed

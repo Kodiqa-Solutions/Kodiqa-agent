@@ -198,6 +198,14 @@ class TestFailoverModelRestore:
         Kodiqa._run_native_chat(k, "hi", "claude")
         assert k.model == "claude-sonnet-4-6"
 
+    def test_empty_response_not_stored(self):
+        # An empty model response must not be stored as a content-less assistant msg.
+        k = self._agent()
+        k._stream_native_with_failover = lambda kind, provider, sp: (
+            {"text": "", "tool_calls": []}, "openai", "deepseek")
+        Kodiqa._run_native_chat(k, "hi", "openai")
+        assert not any(m["role"] == "assistant" for m in k.history)  # nothing stored
+
     def test_restored_even_on_stream_failure(self):
         k = self._agent()
 
@@ -277,6 +285,32 @@ class TestOpenAIMessageInvariant:
         asst = [m for m in msgs if m["role"] == "assistant"][0]
         assert asst["tool_calls"][0]["id"] == "toolu_1"
         assert any(m["role"] == "tool" and m["content"] == "file body" for m in msgs)
+
+    def test_empty_assistant_message_dropped(self):
+        # Regression: an assistant turn with no content and no tool_calls (empty model
+        # response) must be dropped — OpenAI-compat APIs 400 with "content or
+        # tool_calls must be set", and a stored one poisons every later turn.
+        history = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": None},          # degenerate empty turn
+            {"role": "user", "content": "you there?"},
+        ]
+        msgs = self._build(history)
+        assert not any(m["role"] == "assistant" and not m.get("content") and "tool_calls" not in m
+                       for m in msgs)
+        # the empty assistant turn is gone; the two user turns remain
+        assert [m["role"] for m in msgs if m["role"] != "system"] == ["user", "user"]
+
+    def test_empty_content_assistant_with_toolcalls_kept(self):
+        history = [
+            {"role": "assistant", "content": None,
+             "tool_calls": [{"id": "c0", "type": "function",
+                             "function": {"name": "read_file", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c0", "content": "body"},
+        ]
+        msgs = self._build(history)
+        asst = [m for m in msgs if m["role"] == "assistant"]
+        assert asst and asst[0].get("tool_calls")  # kept: it has tool_calls
 
     def test_unanswered_tool_call_backfilled(self):
         # assistant declared a tool_call but no tool result followed (rejected edit,

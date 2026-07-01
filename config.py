@@ -361,6 +361,9 @@ def version_is_newer(latest, current):
 # ── Changelog ──
 # Canonical changelog is CHANGELOG.md — this list powers the /changelog command
 CHANGELOG = [
+    {"version": "v3.19.5", "date": "2026-07-01", "changes": [
+        "Fix: an empty model response no longer breaks the session. A content-less, tool_call-less assistant message made OpenAI-compat APIs 400 ('content or tool_calls must be set') on every later turn. Kodiqa no longer stores such a turn, and the message builder drops any already in history so a stuck session recovers on relaunch.",
+    ]},
     {"version": "v3.19.4", "date": "2026-07-01", "changes": [
         "Fix: the ask_user question prompt is interactive again — it was being executed inside a Status spinner (and could run in a worker thread), whose live display swallowed your keystrokes so you couldn't pick an option. It now runs plainly on the main thread.",
     ]},

@@ -3836,6 +3836,13 @@ class Kodiqa:
 
                 text_content = response.get("text", "")
                 tool_calls = response.get("tool_calls", [])
+                if not text_content and not tool_calls:
+                    # Empty model response — don't store a content-less, tool_call-less
+                    # assistant message (OpenAI-compat APIs reject it and it would poison
+                    # every later turn). Just end the turn.
+                    self.console.print("[dim](no response)[/]")
+                    self._save_session()
+                    return
                 self.history.append(self._assistant_msg(kind, text_content, tool_calls))
 
                 if not tool_calls:
@@ -4683,6 +4690,12 @@ class Kodiqa:
                     text = content or ""
                     if msg.get("tool_calls"):
                         tool_calls = msg["tool_calls"]
+                if not text and not tool_calls:
+                    # Degenerate empty assistant turn (model returned nothing). Skip it —
+                    # OpenAI-compat APIs reject an assistant message with neither content
+                    # nor tool_calls ("content or tool_calls must be set"), and a stored
+                    # one would poison every later turn.
+                    continue
                 entry = {"role": "assistant", "content": text or None}
                 if tool_calls:
                     entry["tool_calls"] = tool_calls
