@@ -376,8 +376,10 @@ def execute_tool_call(name, params, memory, confirm_fn):
 def execute_tools_parallel(tool_calls, memory, confirm_fn):
     """Execute multiple tool calls in parallel where safe. Returns list of (id, result)."""
     # Separate into safe-to-parallel (read-only) and sequential (needs confirm or writes)
+    # NOTE: ask_user is intentionally NOT here — it's interactive (Prompt.ask) and must
+    # run on the main thread, never in a worker thread where it can't read stdin.
     read_only = {"read_file", "list_dir", "tree", "glob", "grep", "git_status", "git_diff",
-                 "web_search", "web_fetch", "memory_search", "ask_user", "clipboard_read"}
+                 "web_search", "web_fetch", "memory_search", "clipboard_read"}
 
     parallel_batch = []
     sequential_batch = []

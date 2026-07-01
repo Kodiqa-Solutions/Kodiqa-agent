@@ -3925,11 +3925,17 @@ class Kodiqa:
         elif len(regular_calls) == 1:
             tc = regular_calls[0]
             label = _tool_label(tc['name'], tc.get('input', {}))
-            with Status(f"  [yellow]●[/] {label}", console=self.console, spinner="dots"):
+            if tc["name"] == "ask_user":
+                # Interactive: must NOT run under a Status spinner — the live display
+                # owns the terminal and swallows the user's typed input (they can't
+                # pick an option). Run it plainly.
                 result = self._execute_tool(tc["name"], tc["input"])
-                if len(result) > 20000:
-                    result = result[:20000] + "\n... (truncated)"
-                results_list.append((tc["id"], result))
+            else:
+                with Status(f"  [yellow]●[/] {label}", console=self.console, spinner="dots"):
+                    result = self._execute_tool(tc["name"], tc["input"])
+            if len(result) > 20000:
+                result = result[:20000] + "\n... (truncated)"
+            results_list.append((tc["id"], result))
             self._track_tool(tc['name'])
             self.console.print(f"  [green]●[/] {label}")
         for tc in mcp_calls:

@@ -1,8 +1,35 @@
 """Tests for action dispatch and execution."""
 
 import os
+import threading
 from unittest.mock import MagicMock
-from actions import _dispatch, _describe_action, execute_action, do_git_diff, do_run_command
+import actions
+from actions import _dispatch, _describe_action, execute_action, do_git_diff, do_run_command, execute_tools_parallel
+
+
+class TestAskUserThreading:
+    """Regression: ask_user is interactive (Prompt.ask) — it must run on the main
+    thread, never in a parallel worker (where it can't read stdin and the user
+    'can't pick any number')."""
+
+    def test_ask_user_runs_on_main_thread(self, monkeypatch):
+        main = threading.current_thread()
+        seen = {}
+        monkeypatch.setattr(actions, "do_ask_user",
+                            lambda q, options=None, header=None, multi_select=False:
+                            (seen.__setitem__("thread", threading.current_thread()) or "answer"))
+        calls = [
+            {"id": "1", "name": "grep", "input": {"pattern": "x", "path": "."}},
+            {"id": "2", "name": "ask_user", "input": {"question": "pick?"}},
+        ]
+        execute_tools_parallel(calls, MagicMock(), lambda d: True)
+        assert seen["thread"] is main
+
+    def test_ask_user_not_in_parallel_readonly_set(self):
+        # It must be excluded so it's routed to the sequential (main-thread) batch.
+        import inspect
+        src = inspect.getsource(execute_tools_parallel)
+        assert '"ask_user"' not in src.split("read_only")[1].split("}")[0]
 
 
 class TestDispatch:

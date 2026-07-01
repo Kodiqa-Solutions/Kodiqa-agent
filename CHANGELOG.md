@@ -4,6 +4,11 @@ All notable changes to Kodiqa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.19.4] - 2026-07-01
+
+### Fixed
+- **The `ask_user` question prompt is interactive again.** It was being run inside a `Status` spinner (and could be dispatched to a worker thread), and the spinner's live display owns the terminal — so your keystrokes were swallowed and you couldn't pick a numbered option (the prompt just sat there). `ask_user` now runs plainly on the main thread with no spinner.
+
 ## [3.19.3] - 2026-06-30
 
 ### Fixed
