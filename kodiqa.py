@@ -49,6 +49,7 @@ from agent_team import AgentTeam
 from toon import maybe_toon
 from actions import (
     parse_actions, execute_action, execute_tool_call, execute_tools_parallel, set_console,
+    set_status_pause,
     set_batch_mode, get_edit_queue, clear_edit_queue, apply_queued_edit, reject_queued_edit,
     do_undo_edit, do_redo_edit, redo_paths, _undo_buffer, set_hooks,
     get_change_log, clear_change_log,
@@ -522,6 +523,8 @@ class Kodiqa:
     def __init__(self):
         self.console = Console()
         set_console(self.console)  # share console with actions.py for diff display
+        self._live_status = None   # active Status spinner, paused before interactive prompts
+        set_status_pause(self._stop_live_status)  # let ask_user pause the spinner
         set_hooks(load_config().get("hooks", {}))
         self.memory = MemoryStore()
         self.sessions = SessionStore(self)  # conversation persistence (session_store.py)
@@ -3849,8 +3852,11 @@ class Kodiqa:
                     self._save_session()
                     return
 
-                results_list, lint_errors = self._run_tool_calls(tool_calls)
+                results_list, lint_errors, review_note = self._run_tool_calls(tool_calls)
                 self._append_tool_results(kind, results_list)
+                if review_note:
+                    # Tell the model what happened to its queued edits (esp. rejections).
+                    self.history.append({"role": "user", "content": review_note})
                 self._save_session()
                 if self._maybe_lint_fix(lint_errors):
                     continue
@@ -3906,24 +3912,34 @@ class Kodiqa:
         self.console.print(Panel("\n".join(lines), title=f"Tasks ({done}/{len(tasks)})",
                                  border_style="cyan", expand=False))
 
+    def _run_status(self, label):
+        """Start a tool-execution spinner and remember it so an interactive prompt
+        (confirmation / ask_user) can pause it. Returns the Status (use as a context
+        manager). Paired with _live_status = None after the block."""
+        st = Status(label, console=self.console, spinner="dots")
+        self._live_status = st
+        return st
+
     def _run_tool_calls(self, tool_calls):
-        """Execute a turn's tool calls (MCP + regular, parallel/single), review
-        queued edits, auto-commit, and lint. Returns (results_list, lint_errors).
-        Shared by both native loops."""
+        """Execute a turn's tool calls (MCP + meta + regular, parallel/single), review
+        queued edits, auto-commit, and lint. Returns (results_list, lint_errors,
+        review_note). Shared by both native loops."""
         if self.batch_edits:
             set_batch_mode(True)
-        # Lazy-MCP meta-tools (mcp_search/mcp_tool_schema/mcp_call) are handled as
-        # regular tools via _execute_tool, not routed straight to the MCP manager.
+        # Three groups. Lazy-MCP meta-tools (mcp_search/mcp_tool_schema/mcp_call) MUST
+        # route through _execute_tool -> _mcp_meta_call, NOT _dispatch (which has no
+        # handler for them and would return "Unknown tool" when batched with others).
+        meta_calls = [tc for tc in tool_calls if tc["name"] in self._MCP_META_NAMES]
         mcp_calls = [tc for tc in tool_calls
                      if tc["name"].startswith("mcp_") and tc["name"] not in self._MCP_META_NAMES]
-        regular_calls = [tc for tc in tool_calls
-                         if not tc["name"].startswith("mcp_") or tc["name"] in self._MCP_META_NAMES]
+        regular_calls = [tc for tc in tool_calls if not tc["name"].startswith("mcp_")]
         results_list = []
         if len(regular_calls) > 1:
             allowed_calls, results_list = self._partition_workspace(regular_calls)
             if allowed_calls:
-                with Status(f"  [yellow]●[/] Running {len(allowed_calls)} tools...", console=self.console, spinner="dots"):
+                with self._run_status(f"  [yellow]●[/] Running {len(allowed_calls)} tools..."):
                     results_list = list(results_list) + execute_tools_parallel(allowed_calls, self.memory, self._confirm)
+                self._live_status = None
             for tc_id, result in results_list:
                 tc_name = next((tc["name"] for tc in regular_calls if tc["id"] == tc_id), "?")
                 tc_input = next((tc.get("input", {}) for tc in regular_calls if tc["id"] == tc_id), {})
@@ -3933,25 +3949,35 @@ class Kodiqa:
             tc = regular_calls[0]
             label = _tool_label(tc['name'], tc.get('input', {}))
             if tc["name"] == "ask_user":
-                # Interactive: must NOT run under a Status spinner — the live display
-                # owns the terminal and swallows the user's typed input (they can't
-                # pick an option). Run it plainly.
-                result = self._execute_tool(tc["name"], tc["input"])
+                result = self._execute_tool(tc["name"], tc["input"])  # interactive: no spinner
             else:
-                with Status(f"  [yellow]●[/] {label}", console=self.console, spinner="dots"):
+                with self._run_status(f"  [yellow]●[/] {label}"):
                     result = self._execute_tool(tc["name"], tc["input"])
+                self._live_status = None
             if len(result) > 20000:
                 result = result[:20000] + "\n... (truncated)"
             results_list.append((tc["id"], result))
             self._track_tool(tc['name'])
             self.console.print(f"  [green]●[/] {label}")
+        # Lazy-MCP meta-tools: route via _execute_tool (which dispatches to _mcp_meta_call).
+        for tc in meta_calls:
+            label = _tool_label(tc["name"], tc.get("input", {}))
+            with self._run_status(f"  [yellow]●[/] {label}"):
+                result = self._execute_tool(tc["name"], tc.get("input", {}))
+                if len(result) > 20000:
+                    result = result[:20000] + "\n... (truncated)"
+                results_list.append((tc["id"], result))
+            self._live_status = None
+            self._track_tool(tc["name"])
+            self.console.print(f"  [green]●[/] {label}")
         for tc in mcp_calls:
             label = _tool_label(tc["name"], tc.get("input", {}))
-            with Status(f"  [yellow]●[/] {label}", console=self.console, spinner="dots"):
+            with self._run_status(f"  [yellow]●[/] {label}"):
                 result = self.mcp.call_tool(tc["name"], tc.get("input", {}))
                 if len(result) > 20000:
                     result = result[:20000] + "\n... (truncated)"
                 results_list.append((tc["id"], result))
+            self._live_status = None
             self.console.print(f"  [green]●[/] {label}")
 
         # Render the live task list as a panel whenever the model updated it.
@@ -3962,17 +3988,21 @@ class Kodiqa:
         if self.toon_enabled:
             results_list = [(tc_id, maybe_toon(r)) for (tc_id, r) in results_list]
 
+        # Batch-edit review runs AFTER the tools (no spinner). Its outcome must reach
+        # the model — a rejected edit means the file was NOT changed — so return it as
+        # a note the loop appends as a user message (a fake "review" tool id would be
+        # dropped by the message builders and the model would build on a phantom edit).
+        review_note = ""
         if self.batch_edits and get_edit_queue():
             set_batch_mode(False)
             review_results = self._review_edit_queue()
-            for rr in review_results:
-                results_list.append(("review", rr))
+            if review_results:
+                review_note = ("[Edit review]\n" + "\n".join(review_results)
+                               + "\nNote: any rejected edits were NOT written to disk.")
         set_batch_mode(False)
         self._auto_commit_if_enabled()
         lint_errors = self._run_lint_if_enabled()
-        if lint_errors:
-            results_list.append(("lint", lint_errors))
-        return results_list, lint_errors
+        return results_list, lint_errors, review_note
 
     def _append_tool_results(self, kind, results_list):
         """Append a turn's tool results to history in the provider's native format."""
@@ -4068,7 +4098,9 @@ class Kodiqa:
             results = []
             for action in actions:
                 action_label = _tool_label(action['name'], action.get('params', {}))
-                with Status(f"  [yellow]●[/] {action_label}", console=self.console, spinner="dots"):
+                # Interactive actions (ask_user) must not run under the spinner; the
+                # confirm/workspace prompts pause the spinner via _live_status.
+                with self._run_status(f"  [yellow]●[/] {action_label}"):
                     if not self._check_workspace_boundary(action['name'], action.get('params', {})):
                         result = "Denied: file is outside the workspace directory."
                     else:
@@ -4076,6 +4108,7 @@ class Kodiqa:
                     if len(result) > 20000:
                         result = result[:20000] + "\n... (truncated)"
                     results.append(f"[Result of {action['name']}]\n{result}")
+                self._live_status = None
                 self._track_tool(action['name'])
                 self.console.print(f"  [green]●[/] {action_label}")
             # Review queued edits if any
@@ -4875,6 +4908,7 @@ class Kodiqa:
         tool_calls = {}  # index -> {id, name, arguments}
         stream_usage = {}
         first_token = True
+        reasoning_chars = 0  # reasoning models stream chain-of-thought in reasoning_content
         writer = StreamWriter(self.console, compact=self.compact_mode, out_rate=self._output_rate())
         stall = StreamStallIndicator(self.console)
         thinking_status = Status("  [dim]Thinking...[/]", console=self.console, spinner="dots")
@@ -4908,11 +4942,22 @@ class Kodiqa:
                 choice = chunk.get("choices", [{}])[0] if chunk.get("choices") else {}
                 delta = choice.get("delta", {})
 
+                # Reasoning models (deepseek-reasoner/v4, etc.) stream their chain-of-
+                # thought in a separate `reasoning_content` field. Show a live thinking
+                # count but don't print it — and DON'T flip first_token, so the answer
+                # text below still gets a clean start once real content arrives.
+                reasoning_chunk = delta.get("reasoning_content")
+                if reasoning_chunk:
+                    reasoning_chars += len(reasoning_chunk)
+                    thinking_status.update(f"  [dim]Thinking... (~{reasoning_chars // 4:,} tokens)[/]")
+
                 # Text content
                 text_chunk = delta.get("content")
                 if text_chunk:
                     if first_token:
-                        thinking_status.stop()
+                        thinking_status.stop()  # tear down the Live spinner before raw writes
+                        if reasoning_chars:
+                            self.console.print(f"  [dim cyan]╰─ reasoning: ~{reasoning_chars // 4:,} tokens[/]")
                         self.console.print("[bold green]Kodiqa[/] ", end="")
                         first_token = False
                     full_text.append(text_chunk)
@@ -6379,9 +6424,20 @@ class Kodiqa:
             except Exception:
                 _logger.debug("ignored error in _render_diagrams", exc_info=True)
 
-    @staticmethod
-    def _arrow_select(options, console, default=0):
+    def _stop_live_status(self):
+        """Stop the active tool-execution spinner (if any) so an interactive prompt
+        (confirmation, arrow-select, ask_user) isn't swallowed by its live display."""
+        st = getattr(self, "_live_status", None)
+        if st is not None:
+            try:
+                st.stop()
+            except Exception:
+                _logger.debug("ignored error stopping live status", exc_info=True)
+            self._live_status = None
+
+    def _arrow_select(self, options, console, default=0):
         """Arrow-key selector. Returns index of chosen option. Options: list of (label, description)."""
+        self._stop_live_status()  # never draw a menu under a live spinner
         import tty, termios
         selected = default
         fd = sys.stdin.fileno()
@@ -6454,6 +6510,7 @@ class Kodiqa:
         return "write"  # write/edit/multi-edit/apply patch/replace all/create dir/move
 
     def _confirm(self, description):
+        self._stop_live_status()  # stop any tool spinner before drawing the prompt
         self.console.print()
         # Extract action type from description (e.g. "Write file: ..." -> "write file")
         action_type = description.split(":")[0].strip().lower()

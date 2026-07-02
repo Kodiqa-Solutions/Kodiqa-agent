@@ -247,6 +247,16 @@ def set_console(console):
     _console = console
 
 
+# Optional callback to pause any live status spinner before an interactive prompt
+# (ask_user) draws — a Rich Status Live display otherwise swallows the user's input.
+_status_pause = None
+
+
+def set_status_pause(fn):
+    global _status_pause
+    _status_pause = fn
+
+
 def _show_diff(path, old_content, new_content):
     """Show colored diff before applying changes."""
     if _console is None:
@@ -1003,6 +1013,9 @@ def do_ask_user(question, options=None, header=None, multi_select=False):
         return "No question provided."
     if _console is None:
         return "Could not ask user (no console available)."
+
+    if _status_pause:      # stop any live spinner so the panel + prompt aren't swallowed
+        _status_pause()
 
     from rich.panel import Panel
 
