@@ -41,6 +41,14 @@ def _push_undo(abs_path, content):
     if abs_path in _redo_buffer:
         _redo_buffer[abs_path].clear()
     _turn_snapshot.setdefault(abs_path, content)  # None = file was created this turn
+    # Cap distinct tracked paths so a long session editing thousands of files can't
+    # grow these dicts unbounded (each key holds up to 10 file-content snapshots).
+    _UNDO_MAX_PATHS = 300
+    if len(_undo_buffer) > _UNDO_MAX_PATHS:
+        for stale in list(_undo_buffer.keys())[:-_UNDO_MAX_PATHS]:
+            if stale != abs_path:
+                _undo_buffer.pop(stale, None)
+                _redo_buffer.pop(stale, None)
 
 
 def get_turn_snapshot():

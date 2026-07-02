@@ -146,7 +146,7 @@ kodiqa
 - **Clipboard patches** — `/patch` applies diffs from clipboard
 - **Changelog** — `/changelog` shows version history
 - **Session stats** — `/stats` shows metrics (files, tools, time, cost)
-- **667 tests** — pytest test suite, all passing
+- **710 tests** — pytest test suite, all passing
 
 ## Arrow-Key UI
 
@@ -577,7 +577,7 @@ find any bugs in this code
   embeddings.py      # RAG vector store (93 lines)
   repomap.py         # Tree-sitter/regex repo map (157 lines)
   bin/kodiqa         # Global install script
-  tests/             # 667 tests (pytest)
+  tests/             # 710 tests (pytest)
   pyproject.toml     # Package config (pip install .)
   requirements.txt   # Dependencies
 
@@ -621,7 +621,7 @@ find any bugs in this code
 ## Testing
 
 ```bash
-pytest -v          # 667 tests, all passing
+pytest -v          # 710 tests, all passing
 ```
 
 ## Requirements

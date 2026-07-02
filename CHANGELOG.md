@@ -4,6 +4,31 @@ All notable changes to Kodiqa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.20.0] - 2026-07-02
+
+**Reliability audit release.** A broad correctness + resilience sweep from a four-agent audit (core engine, command/UX, error-handling, test coverage) — 25 fixes across four priority tiers, test suite 685 → 710.
+
+### Fixed — interaction & tool plumbing (P0)
+- **Interactive prompts are no longer swallowed by the tool spinner.** Confirmations (`_confirm`), arrow-select menus, and `ask_user` now pause the live `Status` spinner on *every* path (native single-tool, native multi-tool, and the Ollama loop). Previously only `ask_user` on one path was fixed — confirming a `run_command`/`git_commit`/`delete` (the most common action) or picking an option would flicker/garble under the spinner.
+- **Lazy-MCP meta-tools work when batched.** `mcp_search`/`mcp_tool_schema`/`mcp_call` are routed via `_execute_tool` even when combined with another tool in one turn, instead of returning `"Unknown tool"`.
+- **Batch-edit review outcomes reach the model.** A rejected edit is communicated (the model no longer builds on a phantom change); previously the outcome was dropped as a fake `"review"` tool-result id.
+
+### Fixed — history & compaction (P1)
+- Ollama loop **normalizes mixed-format history** (content-blocks / `tool` messages → text) so switching Claude/OpenAI → a local model mid-conversation doesn't garble or error.
+- `/compact` + auto-compact **no longer 400** on OpenAI-compat providers after a tool turn (orphan `tool` messages are dropped) — context actually shrinks.
+- Session/history files are written **atomically** (temp + `os.replace`); a crash mid-write can't truncate the crash-recovery file.
+- History-session ids are **monotonic** — no collision/overwrite after 100 sessions; `--resume`/`/history` load the right session; orphaned files pruned.
+- `/watch` detects **newly-created** files; `/multi` folds `@`-file content into the prompt and warns instead of silently dropping tools/images.
+
+### Fixed — resilience (P2)
+- Quit-time session summary is **gated** (`summarize_on_exit`) and **hard-capped at 15s** so a slow/offline provider can't stall exit; every teardown step is guarded.
+- MCP stdio uses **one persistent reader thread** (no leaked blocked threads on timeout, no two threads racing the pipe / channel desync).
+- `MemoryStore` SQLite access is **lock-guarded** (safe under parallel tool execution).
+- Image tool-results aren't dumped as base64 **text** on a provider switch; the REPL survives a **non-tty stdout**; the token estimate counts `tool_calls` and resets on model switch.
+
+### Fixed — polish (P3)
+- Arrow-select number keys work beyond 5; the completer offers keywords for `/approve` `/effort` `/failover` `/tune` `/toon` `/sandbox` `/mcp` and `/lsp diagnostics`; `/voice` preflights the actual recorder (`rec`); `save_settings` no longer mutates the caller's dict; undo buffers are capped; `_run_pull` bounds its clean-EOF wait; stale MCP-OAuth text removed.
+
 ## [3.19.5] - 2026-07-01
 
 ### Fixed

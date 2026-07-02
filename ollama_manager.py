@@ -478,7 +478,16 @@ class OllamaManager:
                     except Exception:
                         _logger.debug("ignored error killing pull", exc_info=True)
             elif proc.poll() is None:
-                proc.wait()
+                # stdout closed but the child hasn't exited — bound the wait so a
+                # process that hangs after EOF can't block forever.
+                try:
+                    proc.wait(timeout=10)
+                except Exception:
+                    try:
+                        proc.terminate()
+                        proc.wait(timeout=5)
+                    except Exception:
+                        _logger.debug("ignored error terminating stalled pull", exc_info=True)
             try:
                 proc.stdout.close()
             except Exception:

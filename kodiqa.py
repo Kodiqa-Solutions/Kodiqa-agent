@@ -388,6 +388,22 @@ class StreamWriter:
             self._in_fence = False
 
 
+# Fixed keyword arguments for option-word commands, so the completer offers the
+# actual choices instead of falling back to filesystem paths.
+_KEYWORD_ARGS = {
+    "/approve": ("write", "command", "delete", "clipboard", "on", "off"),
+    "/effort": ("off", "low", "medium", "high"),
+    "/failover": ("on", "off", "auto"),
+    "/tune": ("ctx", "kv", "flash", "gpu", "reset"),
+    "/toon": ("on", "off"),
+    "/sandbox": ("on", "off"),
+    "/lint": ("off",),
+    "/mcp": ("add", "remove", "list", "lazy"),
+    "/multi": ("all", "single"),
+    "/verbose": ("on", "off"),
+}
+
+
 class KodiqaCompleter(Completer):
     """Tab completer for slash commands, model aliases, modes, and file paths."""
 
@@ -474,7 +490,7 @@ class KodiqaCompleter(Completer):
                         except ImportError:
                             pass
                     elif cmd in ("/lsp",):
-                        for sub in ("start", "stop", "status"):
+                        for sub in ("start", "stop", "diagnostics"):
                             if sub.startswith(word):
                                 yield Completion(sub, start_position=-len(word))
                     elif cmd in ("/persona",):
@@ -504,6 +520,11 @@ class KodiqaCompleter(Completer):
                         for n in self.agent._checkpoints.keys():
                             if n.startswith(word):
                                 yield Completion(n, start_position=-len(word))
+                    elif cmd in _KEYWORD_ARGS:
+                        # Option-word commands: complete their keywords, not file paths.
+                        for kw in _KEYWORD_ARGS[cmd]:
+                            if kw.startswith(word):
+                                yield Completion(kw, start_position=-len(word))
                     else:
                         yield from self._complete_path(word)
             else:
@@ -1648,9 +1669,11 @@ class Kodiqa:
     def _cmd_commands(self, arg):
         cmds = self._custom_commands()
         if not cmds:
-            self.console.print("[dim]No custom commands. Create one:[/]")
-            self.console.print(f"[dim]  mkdir -p .kodiqa/commands && echo 'Review $ARGUMENTS for bugs' > .kodiqa/commands/review.md[/]")
-            self.console.print("[dim]Then run [/][bold]/review <file>[/][dim]. Templates support $ARGUMENTS and $1, $2, … Global dir: ~/.kodiqa/commands/[/]")
+            self.console.print("[dim]No custom commands. Create one (pick a name that isn't a built-in):[/]")
+            self.console.print("[dim]  mkdir -p .kodiqa/commands && echo 'Review $ARGUMENTS for bugs' > .kodiqa/commands/cr.md[/]")
+            self.console.print("[dim]Then run [/][bold]/cr <file>[/][dim]. Built-in commands (e.g. /review) take "
+                               "precedence, so a same-named template won't run. Templates support $ARGUMENTS and "
+                               "$1, $2, … Global dir: ~/.kodiqa/commands/[/]")
             return
         self.console.print("[bold]Custom commands:[/]")
         for name, (path, desc) in sorted(cmds.items()):
@@ -5572,8 +5595,8 @@ class Kodiqa:
             else:
                 self.console.print(f"  [red]Failed to connect to '{name}'[/]")
                 if is_remote:
-                    self.console.print("  [dim]If the server needs auth, pass --bearer <token> or --header K:V. "
-                                       "OAuth login is coming in a later release.[/]")
+                    self.console.print("  [dim]If the server needs auth: --bearer <token>, --header K:V, "
+                                       "or --oauth for a browser login.[/]")
         elif subcmd == "remove":
             if len(parts) < 2:
                 self.console.print("[dim]Usage: /mcp remove <name>[/]")
@@ -6043,11 +6066,11 @@ class Kodiqa:
             self.console.print("[yellow]/voice needs an OpenAI API key for Whisper transcription.[/] "
                                "[dim]Add one with /key openai.[/]")
             return
-        # Check for sox
-        try:
-            subprocess.run(["sox", "--version"], capture_output=True, timeout=5, check=True)
-        except (FileNotFoundError, subprocess.CalledProcessError):
-            self.console.print("[red]sox not installed.[/] Install: [cyan]brew install sox[/]")
+        # Check for `rec` — the actual recorder we invoke below. sox may be present
+        # without the `rec` symlink, so preflight the real command, not just sox.
+        import shutil as _shutil
+        if not _shutil.which("rec"):
+            self.console.print("[red]`rec` (from sox) not found.[/] Install: [cyan]brew install sox[/]")
             return
 
         import tempfile
@@ -6612,9 +6635,9 @@ class Kodiqa:
                     selected = (selected - 1) % n
                 elif ch == "j":  # vim down
                     selected = (selected + 1) % n
-                elif ch in ("1", "2", "3", "4", "5"):
+                elif ch.isdigit() and ch != "0":
                     idx = int(ch) - 1
-                    if idx < n:
+                    if idx < n:   # support any option count, not just 1-5
                         selected = idx
                         break
                 # Move cursor up N lines, re-render in place

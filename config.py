@@ -361,6 +361,16 @@ def version_is_newer(latest, current):
 # ── Changelog ──
 # Canonical changelog is CHANGELOG.md — this list powers the /changelog command
 CHANGELOG = [
+    {"version": "v3.20.0", "date": "2026-07-02", "changes": [
+        "Reliability audit release — a broad correctness + resilience sweep (4-agent audit, 25 fixes, tests 685 -> 710).",
+        "Interactive prompts no longer swallowed by the tool spinner: confirmations, arrow-select menus, and ask_user now pause the live Status on every path (native single/multi + Ollama). Confirming a command / picking an option works reliably again.",
+        "Lazy-MCP meta-tools (mcp_search/mcp_tool_schema/mcp_call) work when batched with other tools (no more 'Unknown tool').",
+        "Batch-edit review outcomes reach the model (a rejected edit is no longer invisible) instead of being dropped as a fake tool-result id.",
+        "History handling: the Ollama loop normalizes mixed-format history (no garble/error after a cloud tool turn); /compact + auto-compact no longer 400 on OpenAI-compat after tool turns; image tool-results aren't dumped as base64 text on a provider switch.",
+        "Crash-safety: session/history files are written atomically (temp + os.replace); history-session ids are monotonic (no collision/overwrite after 100 sessions); the REPL survives a non-tty stdout.",
+        "Resilience: quit-time session summary is gated (summarize_on_exit) + hard-capped at 15s so a slow/offline provider can't stall exit; MCP stdio uses one persistent reader (no leaked threads / channel desync); MemoryStore SQLite access is lock-guarded; undo buffers are capped; save_settings no longer mutates the caller's dict.",
+        "Polish: /watch detects newly-created files; /multi folds in @-files and warns instead of silently dropping tools/images; arrow-select number keys work beyond 5; completer offers keywords for /approve /effort /failover /tune /toon /sandbox /mcp and /lsp diagnostics; /voice preflights the actual recorder; stale MCP-OAuth text removed.",
+    ]},
     {"version": "v3.19.5", "date": "2026-07-01", "changes": [
         "Fix: an empty model response no longer breaks the session. A content-less, tool_call-less assistant message made OpenAI-compat APIs 400 ('content or tool_calls must be set') on every later turn. Kodiqa no longer stores such a turn, and the message builder drops any already in history so a stuck session recovers on relaunch.",
     ]},
@@ -613,6 +623,7 @@ def save_settings(settings):
         os.chmod(KODIQA_DIR, 0o700)
     except OSError:
         pass
+    settings = dict(settings)  # copy: never mutate the caller's live dict as a side effect
     if os.path.isfile(SETTINGS_FILE):
         try:
             existing = json.load(open(SETTINGS_FILE))
