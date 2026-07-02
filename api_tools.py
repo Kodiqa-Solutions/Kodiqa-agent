@@ -80,13 +80,20 @@ class OpenAPIServer:
             if not isinstance(item, dict):
                 continue
             shared = item.get("parameters", [])
+            if not isinstance(shared, list):  # malformed spec: parameters must be a list
+                shared = []
             for method, op in item.items():
                 if method.lower() not in _HTTP_METHODS or not isinstance(op, dict):
                     continue
                 name = _sanitize(op.get("operationId") or f"{method}_{path}")
                 props, required = {}, []
                 path_params, query_params, body_params = set(), set(), set()
-                for p in shared + op.get("parameters", []):
+                op_params = op.get("parameters", [])
+                if not isinstance(op_params, list):
+                    op_params = []
+                for p in shared + op_params:
+                    if not isinstance(p, dict):  # skip a malformed parameter entry
+                        continue
                     pname, loc = p.get("name"), p.get("in")
                     if not pname or loc not in ("path", "query"):
                         continue

@@ -354,7 +354,14 @@ class MCPManager:
         (e.g. OpenAPIServer / GraphQLServer). Returns its tools, or None."""
         if name in self.servers:
             self.servers[name].stop()
-        if server.start():
+        try:
+            started = server.start()
+        except Exception:
+            # A malformed-but-valid-JSON spec / bad introspection shouldn't crash the
+            # caller — degrade to the graceful "Failed to load" path instead.
+            _logger.debug("add_source: server.start() raised", exc_info=True)
+            started = False
+        if started:
             self.servers[name] = server
             return server.tools
         return None
@@ -369,15 +376,21 @@ class MCPManager:
 
     def call_tool(self, full_tool_name, arguments):
         """Call a tool by its full name (mcp_servername_toolname)."""
-        # Parse: mcp_servername_toolname
-        parts = full_tool_name.split("_", 2)
-        if len(parts) < 3 or parts[0] != "mcp":
+        if not full_tool_name.startswith("mcp_"):
             return f"Invalid MCP tool name: {full_tool_name}"
-        server_name = parts[1]
-        tool_name = parts[2]
-        if server_name not in self.servers:
-            return f"MCP server '{server_name}' not connected"
-        return self.servers[server_name].call_tool(tool_name, arguments)
+        rest = full_tool_name[len("mcp_"):]
+        # Both server names AND tool names can contain underscores, so a fixed
+        # split("_", 2) misroutes (e.g. server "my_server" + tool "get_thing").
+        # Disambiguate by matching the longest connected server name that prefixes
+        # the remainder — server names are known, arbitrary tool names are not.
+        for server_name in sorted(self.servers, key=len, reverse=True):
+            prefix = server_name + "_"
+            if rest == server_name or rest.startswith(prefix):
+                tool_name = rest[len(prefix):] if rest.startswith(prefix) else ""
+                if not tool_name:
+                    continue
+                return self.servers[server_name].call_tool(tool_name, arguments)
+        return f"MCP server not connected for tool: {full_tool_name}"
 
     def get_all_tools(self):
         """Get all tool schemas from all connected servers."""

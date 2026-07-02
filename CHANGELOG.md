@@ -4,6 +4,28 @@ All notable changes to Kodiqa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.20.1] - 2026-07-02
+
+**Stability audit release.** A second four-agent deep audit plus a full feature-by-feature runtime verification (module loading, command registry, tool dispatch, end-to-end chat loop, bridge). Every clear-cut finding is fixed with a regression test; suite 710 → 729.
+
+### Fixed — data loss & correctness
+- **Writing into a pre-existing *empty* file no longer deletes it on `/undo` or `/rewind`.** The undo buffer used a `None` sentinel for "file didn't exist", but an empty existing file (`""`) collided with it — undo/rewind then removed the real file. Existence is now tracked explicitly (in the direct write path and the batch queue).
+- **`multi_edit` and `diff_apply` now respect batch-review mode.** Every other write tool queues for the `/accept` accept/reject review, but these two wrote to disk immediately — silently bypassing the "review before apply" guarantee (batch review is ON by default). They now queue like `write_file`/`edit_file`.
+- **`delete_file` is now undoable and rewindable** (text files). A deleted file is snapshotted first, so `/undo` and `/rewind` restore it; binary files (which can't round-trip the text undo buffer) are deleted without an undo entry and say so.
+- **The free-local default model routed to the cloud.** `qwen3-coder` is the local-Ollama `DEFAULT_MODEL` (and the `coder` alias / a `/recommend` pick), but it was *also* a Qwen cloud alias, so `get_openai_provider("qwen3-coder")` returned `"qwen"` and the default hit the Qwen API. It now resolves to local Ollama; Coding-Plan users use the `qwen-coder` alias or the full `qwen3-coder-plus`/`qwen3-coder-next`.
+
+### Fixed — MCP & session integrity
+- **MCP tool calls to underscore-named servers were misrouted.** `mcp_my_server_get_thing` was split into server `"my"` (not connected) — every tool on any `_`-named stdio/HTTP/OpenAPI/GraphQL server was unreachable. The manager now matches the longest connected server name.
+- **Image + Claude no longer poisons the session.** Attaching an image on an OpenAI-compat model then switching to Claude / failing over to Claude / `/compact`-ing on Claude sent an OpenAI `image_url` block Anthropic rejects (400), and the bad block stayed in history — every later Claude request rebuilt the same 400. `_build_claude_messages` now converts `image_url` → Claude's `image` format.
+
+### Robustness & hardening
+- `multi_edit` skips a malformed (non-dict) edit element instead of failing the whole call.
+- OpenAPI tool sources degrade gracefully on malformed-but-valid-JSON specs (was an unhandled crash).
+- A stalled Ollama pull (`returncode` never set) is reported as failure, not "installed!".
+- The editor/IDE bridge compares its bearer token in constant time (`secrets.compare_digest`).
+- OAuth + bridge listening sockets are `server_close()`d on stop (no fd leak per login / start-stop cycle).
+- `/clear` resets the cached context-token count, so the first message after a clear can't trigger a bogus auto-compact.
+
 ## [3.20.0] - 2026-07-02
 
 **Reliability audit release.** A broad correctness + resilience sweep from a four-agent audit (core engine, command/UX, error-handling, test coverage) — 25 fixes across four priority tiers, test suite 685 → 710.

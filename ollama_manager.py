@@ -494,7 +494,11 @@ class OllamaManager:
                 _logger.debug("ignored error closing pull stdout", exc_info=True)
 
         out = b"".join(chunks).decode("utf-8", "replace")
-        return (proc.returncode or 0), out, cancelled
+        # A None returncode means the child never cleanly exited (hung after EOF, then
+        # terminate() timed out). Report it as failure (1), not success — `None or 0`
+        # would have made a stalled pull look "installed!".
+        rc = proc.returncode if proc.returncode is not None else 1
+        return rc, out, cancelled
 
     def _pull_one(self, name):
         """Pull a model, with a transparent cloud fallback.

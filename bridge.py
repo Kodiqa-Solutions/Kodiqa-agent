@@ -38,8 +38,9 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _authed(self):
         tok = self.server.token
-        return (self.headers.get("Authorization", "") == f"Bearer {tok}"
-                or self.headers.get("X-Kodiqa-Token", "") == tok)
+        # Constant-time compare to avoid leaking the token via response-timing.
+        return (secrets.compare_digest(self.headers.get("Authorization", ""), f"Bearer {tok}")
+                or secrets.compare_digest(self.headers.get("X-Kodiqa-Token", ""), tok))
 
     def do_GET(self):
         u = urlparse(self.path)
@@ -115,6 +116,7 @@ class KodiqaBridge:
         if self.httpd:
             try:
                 self.httpd.shutdown()
+                self.httpd.server_close()  # release the listening socket fd
             except Exception:
                 _logger.debug("ignored error stopping bridge", exc_info=True)
             self.httpd = None

@@ -105,7 +105,10 @@ QWEN_EXTRA_ALIASES = {
     "qwen-api": "qwen3.5-plus",
     "qwen3.5": "qwen3.5-plus",
     "qwen3.5-plus": "qwen3.5-plus",
-    "qwen3-coder": "qwen3-coder-plus",
+    # NOTE: "qwen3-coder" is intentionally NOT here — it's the local-Ollama DEFAULT_MODEL
+    # (and the `coder` alias / a /recommend pick). Listing it made get_openai_provider()
+    # route the free-local default to the Qwen CLOUD API. Coding-Plan users use the
+    # `qwen-coder` alias or the full `qwen3-coder-plus`/`qwen3-coder-next` names.
 }
 
 QWEN_API_URL = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions"
@@ -361,6 +364,17 @@ def version_is_newer(latest, current):
 # ── Changelog ──
 # Canonical changelog is CHANGELOG.md — this list powers the /changelog command
 CHANGELOG = [
+    {"version": "v3.20.1", "date": "2026-07-02", "changes": [
+        "Stability audit release — a second 4-agent audit + full feature-by-feature verification (tests 710 -> 729).",
+        "Fix (data loss): writing into a pre-existing EMPTY file no longer makes /undo or /rewind delete it (a None-vs-empty sentinel collision destroyed the file).",
+        "Fix (safety): multi_edit and diff_apply now respect batch-review mode (/accept) instead of writing to disk instantly and skipping the accept/reject step.",
+        "Fix (data loss): delete_file is now undoable and rewindable for text files — /undo and /rewind restore a deleted file instead of losing it.",
+        "Fix (local default): the free-local default model 'qwen3-coder' routed to the Qwen CLOUD API because it was also a cloud alias. It now correctly resolves to local Ollama; Coding-Plan users use 'qwen-coder' or the full 'qwen3-coder-plus'/'qwen3-coder-next'.",
+        "Fix (MCP): tool calls to servers whose NAME contains an underscore were misrouted (every tool unreachable); the manager now matches the longest connected server name.",
+        "Fix (session poison): switching to Claude / failing over to Claude / compacting on Claude after attaching an image on an OpenAI-compat model no longer 400s — image_url blocks are converted to Claude's image format instead of poisoning every later request.",
+        "Robustness: multi_edit skips a malformed edit element instead of failing the whole call; OpenAPI sources degrade gracefully on malformed specs; a stalled Ollama pull is reported as failure, not 'installed!'.",
+        "Hardening: the editor bridge compares its bearer token in constant time; OAuth/bridge listening sockets are closed on stop (no fd leak); /clear resets the cached context-token count (no bogus auto-compact on an empty conversation).",
+    ]},
     {"version": "v3.20.0", "date": "2026-07-02", "changes": [
         "Reliability audit release — a broad correctness + resilience sweep (4-agent audit, 25 fixes, tests 685 -> 710).",
         "Interactive prompts no longer swallowed by the tool spinner: confirmations, arrow-select menus, and ask_user now pause the live Status on every path (native single/multi + Ollama). Confirming a command / picking an option works reliably again.",

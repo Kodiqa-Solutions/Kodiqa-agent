@@ -286,6 +286,7 @@ class OAuthSession:
                 time.sleep(0.3)
         finally:
             httpd.shutdown()
+            httpd.server_close()  # release the callback listening socket fd
         if result.get("error"):
             log(f"Authorization failed: {result['error']}")
             return False

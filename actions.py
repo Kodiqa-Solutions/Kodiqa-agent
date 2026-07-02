@@ -232,9 +232,12 @@ def apply_queued_edit(index):
     path = entry.get("path", "")
     if not path:
         return "Error: empty file path — skipped"
-    # Save to undo buffer
+    # Save to undo buffer. Edits/replace_all always target an existing file, so default
+    # existed=True; only "write" entries carry the real flag (a write may create a file
+    # or overwrite a pre-existing empty one — the two need different undo behavior).
     old = entry.get("old_content", "")
-    _push_undo(os.path.abspath(path), old if old else None)
+    existed = entry.get("existed", True)
+    _push_undo(os.path.abspath(path), old if existed else None)
     # Write the new content
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "w") as f:
@@ -560,8 +563,9 @@ def do_write_file(path, content):
     path = os.path.expanduser(path)
     if not content:
         return "Error: content is required — cannot write empty content."
+    existed = os.path.isfile(path)
     old_content = ""
-    if os.path.isfile(path):
+    if existed:
         try:
             with open(path, "r", errors="replace") as f:
                 old_content = f.read()
@@ -572,14 +576,17 @@ def do_write_file(path, content):
         _edit_queue.append({
             "path": path,
             "type": "write",
-            "old_content": old_content if old_content else "",
+            "old_content": old_content,
+            "existed": existed,
             "new_content": content,
-            "description": f"Write {len(content)} chars to {path}" + (" (new file)" if not old_content else ""),
+            "description": f"Write {len(content)} chars to {path}" + (" (new file)" if not existed else ""),
         })
         return f"[queued] Write to {path} ({len(content)} chars)"
-    # Save to undo buffer before writing
-    _push_undo(os.path.abspath(path), old_content if old_content else None)
-    if old_content:
+    # Save to undo buffer before writing. None means "file didn't exist" (undo → delete);
+    # use existence, not emptiness, so writing into a pre-existing EMPTY file doesn't make
+    # undo/rewind wrongly delete it.
+    _push_undo(os.path.abspath(path), old_content if existed else None)
+    if existed:
         _show_diff(path, old_content, content)
     else:
         if _console:
@@ -1136,9 +1143,19 @@ def do_delete_file(path):
         return f"Not found: {path}"
     if os.path.isdir(path):
         return f"Use run_command to delete directories: {path}"
+    # Snapshot the content first so /undo and /rewind can restore it. Binary files
+    # can't round-trip through the text-based undo buffer, so they're deleted without
+    # an undo entry (better than restoring corrupted bytes).
+    snapshotted = False
+    try:
+        with open(path, "r") as f:
+            _push_undo(os.path.abspath(path), f.read())
+            snapshotted = True
+    except (UnicodeDecodeError, ValueError, OSError):
+        _logger.debug("delete_file: content not snapshotted (binary/unreadable)", exc_info=True)
     try:
         os.remove(path)
-        return f"Deleted: {path}"
+        return f"Deleted: {path}" + ("" if snapshotted else " (binary — not undoable)")
     except Exception as e:
         return f"Delete error: {e}"
 
@@ -1161,6 +1178,8 @@ def do_multi_edit(path, edits):
     applied = 0
     new_content = content
     for edit in edits:
+        if not isinstance(edit, dict):
+            continue  # skip a malformed element instead of failing the whole call
         old = edit.get("old_string", "")
         new = edit.get("new_string", "")
         if old and old in new_content:
@@ -1168,6 +1187,16 @@ def do_multi_edit(path, edits):
             applied += 1
     if applied == 0:
         return f"No edits matched in {path}"
+    # Batch mode: queue for review instead of applying immediately (mirrors write/edit).
+    if _batch_mode:
+        _edit_queue.append({
+            "path": path,
+            "type": "multi_edit",
+            "old_content": content,
+            "new_content": new_content,
+            "description": f"Multi-edit {path} ({applied} change{'s' if applied != 1 else ''})",
+        })
+        return f"[queued] Multi-edit {path} ({applied} changes)"
     # Push to undo buffer only once we know we'll actually change the file.
     _push_undo(os.path.abspath(path), content)
     _show_diff(path, content, new_content)
@@ -1212,21 +1241,34 @@ def do_diff_apply(path, patch):
         return f"File not found: {path}"
     with open(path, "r") as f:
         content = f.read()
-    _push_undo(os.path.abspath(path), content)
     # Apply via the system `patch` command.
     try:
         proc = subprocess.run(
             ["patch", path],
             input=patch, capture_output=True, text=True, timeout=30,
         )
-        if proc.returncode == 0:
-            with open(path, "r") as f:
-                new_content = f.read()
-            _show_diff(path, content, new_content)
-            _record_change(os.path.abspath(path), content, new_content)
-            return f"Patch applied to {path}"
-        return f"Patch failed: {proc.stderr}"
     except FileNotFoundError:
         return "patch command not found. Install with: brew install gpatch"
     except Exception as e:
         return f"Patch error: {e}"
+    if proc.returncode != 0:
+        return f"Patch failed: {proc.stderr}"
+    with open(path, "r") as f:
+        new_content = f.read()
+    # Batch mode: `patch` already wrote to disk, so revert it and queue the change for
+    # review instead of applying immediately (mirrors write/edit/multi_edit).
+    if _batch_mode:
+        with open(path, "w") as f:
+            f.write(content)
+        _edit_queue.append({
+            "path": path,
+            "type": "diff_apply",
+            "old_content": content,
+            "new_content": new_content,
+            "description": f"Apply patch to {path}",
+        })
+        return f"[queued] Patch {path}"
+    _push_undo(os.path.abspath(path), content)
+    _show_diff(path, content, new_content)
+    _record_change(os.path.abspath(path), content, new_content)
+    return f"Patch applied to {path}"

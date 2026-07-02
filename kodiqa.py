@@ -2053,6 +2053,7 @@ class Kodiqa:
 
     def _cmd_clear(self, arg):
         self.history = []
+        self._last_context_tokens = 0  # else the stale count triggers a bogus auto-compact
         clear_task_list()
         self._clear_session()
         self.console.print("[dim]Conversation cleared.[/]")
@@ -4339,7 +4340,7 @@ class Kodiqa:
                             else:
                                 _logger.debug("dropping orphan tool_result id=%r", tid)
                         else:
-                            other.append(b)
+                            other.append(self._to_claude_block(b))
                     add_user_blocks(kept)
                     if other:
                         backfill_pending()  # text after tool_results closes the tool turn
@@ -4353,6 +4354,27 @@ class Kodiqa:
         if not messages or messages[0]["role"] != "user":
             messages.insert(0, {"role": "user", "content": "Hello"})
         return messages
+
+    @staticmethod
+    def _to_claude_block(b):
+        """Normalize a stored user content block to a valid Anthropic block. Converts an
+        OpenAI-format `image_url` block (produced when the turn ran on an OpenAI-compat
+        model) into a Claude `image` block — otherwise Claude 400s and the invalid block
+        poisons every later request rebuilt from history. Other blocks pass through."""
+        if not isinstance(b, dict) or b.get("type") != "image_url":
+            return b
+        url = (b.get("image_url") or {}).get("url", "")
+        if url.startswith("data:"):
+            try:
+                header, data = url.split(",", 1)
+                media_type = header[5:].split(";")[0] or "image/png"
+                return {"type": "image", "source": {"type": "base64",
+                                                    "media_type": media_type, "data": data}}
+            except (ValueError, IndexError):
+                return {"type": "text", "text": "[image omitted — unreadable data URL]"}
+        if url.startswith(("http://", "https://")):
+            return {"type": "image", "source": {"type": "url", "url": url}}
+        return {"type": "text", "text": "[image omitted]"}
 
     def _call_claude_stream(self, system_prompt, messages):
         """Stream Claude API with native tool_use, prompt caching, and token tracking."""
