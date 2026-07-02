@@ -3511,13 +3511,25 @@ class Kodiqa:
     # ── Multi-model chat ──
 
     def _chat_multi(self, user_msg):
-        """Send message to all selected models one at a time (sequential to save RAM)."""
+        """Send message to all selected models one at a time (sequential to save RAM).
+        Multi-model mode is consensus Q&A only — it does NOT run tools or apply edits."""
         from rich.status import Status
+
+        # Don't silently drop attachments: fold @-file content into the prompt, and
+        # warn about anything multi-mode can't honor (images, tools/edits).
+        user_msg = self._append_files_to_text(user_msg, self._pending_files)
+        if self._pending_images:
+            self.console.print(f"[yellow]⚠ /multi is analysis-only — not sending "
+                               f"{len(self._pending_images)} image(s). Use [bold]/single[/] "
+                               "(a vision model) to include images.[/]")
+        self._pending_files = []
+        self._pending_images = []
 
         memories_ctx = self.memory.get_context()
         context_file_ctx = self._load_context_file()
 
-        self.console.print(f"\n[dim]Querying {len(self.multi_models)} models sequentially (saves RAM)...[/]\n")
+        self.console.print(f"\n[dim]Querying {len(self.multi_models)} models sequentially "
+                           "(consensus Q&A — no tools/edits)...[/]\n")
 
         # Query models one at a time so Ollama can unload between them
         results = {}
@@ -4038,6 +4050,50 @@ class Kodiqa:
 
     # ── Ollama chat (text-based actions) ──
 
+    def _build_ollama_messages(self, system_prompt):
+        """Flatten history to plain {role, content:str} messages for Ollama's
+        /api/chat. Turns that ran on Claude/OpenAI leave content-block assistant
+        messages and role:'tool' entries that Ollama can't parse — coerce everything
+        to text (and fold tool results into user notes) so switching to a local model
+        mid-conversation doesn't garble or error. Preserves the `images` field on
+        user turns (Ollama vision)."""
+        msgs = [{"role": "system", "content": system_prompt}]
+        for m in self.history:
+            role = m.get("role")
+            if role == "system":
+                continue
+            content = m.get("content")
+            images = m.get("images")
+            if isinstance(content, str):
+                text = content
+            elif isinstance(content, list):
+                parts = []
+                for b in content:
+                    if not isinstance(b, dict):
+                        continue
+                    t = b.get("type")
+                    if t == "text":
+                        parts.append(b.get("text", ""))
+                    elif t == "tool_use":
+                        parts.append(f"[called tool {b.get('name', '')}]")
+                    elif t == "tool_result":
+                        c = b.get("content", "")
+                        parts.append(c if isinstance(c, str) else "[tool result]")
+                    elif t == "image":
+                        parts.append("[image]")
+                text = "\n".join(p for p in parts if p)
+            else:
+                text = ""
+            if role == "tool":  # OpenAI-format tool result → user note (never dropped)
+                role, text = "user", (f"[tool result] {text}" if text else "[tool result]")
+            if not text and not images:
+                continue
+            entry = {"role": role if role in ("user", "assistant") else "user", "content": text}
+            if images:
+                entry["images"] = images
+            msgs.append(entry)
+        return msgs
+
     def _chat_ollama(self, user_msg):
         # Ensure Ollama is running (may have switched from cloud model)
         if not self._ensure_ollama():
@@ -4076,7 +4132,7 @@ class Kodiqa:
                 self.console.print(f"[yellow]Reached max iterations ({_max_iter}). Stopping — raise max_iterations in /config if needed.[/]")
                 break
             system_prompt = self._build_system_prompt(SYSTEM_PROMPT)
-            messages = [{"role": "system", "content": system_prompt}] + self.history
+            messages = self._build_ollama_messages(system_prompt)
 
             assistant_text = self._stream_ollama(messages)
             if assistant_text is None:
@@ -5056,10 +5112,32 @@ class Kodiqa:
         key = self.api_keys.get(provider, "")
         if not key:
             return ""
+        # Flatten to plain user/assistant text. Crucially, DROP role:"tool" messages
+        # and tool_use blocks — a surviving tool result with no preceding tool_calls
+        # is an invalid request (400) that made /compact + auto-compact silently fail
+        # after any tool-using turn (so context never shrank).
         oai_msgs = [{"role": "system", "content": system}]
         for m in messages:
-            if isinstance(m.get("content"), str):
-                oai_msgs.append({"role": m["role"], "content": m["content"]})
+            role = m.get("role")
+            if role not in ("user", "assistant"):
+                continue  # skip tool results / system-in-history
+            content = m.get("content")
+            if isinstance(content, str):
+                text = content
+            elif isinstance(content, list):
+                parts = []
+                for b in content:
+                    if isinstance(b, dict):
+                        if b.get("type") == "text":
+                            parts.append(b.get("text", ""))
+                        elif b.get("type") == "tool_result":
+                            c = b.get("content", "")
+                            parts.append(c if isinstance(c, str) else "")
+                text = "\n".join(p for p in parts if p)
+            else:
+                text = ""
+            if text.strip():
+                oai_msgs.append({"role": role, "content": text})
         try:
             resp = requests.post(
                 prov["url"],
@@ -6120,32 +6198,35 @@ class Kodiqa:
             return
         watcher = {"path": path, "active": True, "last_mtime": {}}
         self._watchers[name] = watcher
-        def poll_changes():
+        def _snapshot():
+            snap = {}
             if os.path.isdir(path):
                 for root, dirs, files in os.walk(path):
                     dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
                     for f in files:
                         fp = os.path.join(root, f)
                         try:
-                            watcher["last_mtime"][fp] = os.path.getmtime(fp)
+                            snap[fp] = os.path.getmtime(fp)
                         except OSError:
                             pass
             else:
                 try:
-                    watcher["last_mtime"][path] = os.path.getmtime(path)
+                    snap[path] = os.path.getmtime(path)
                 except OSError:
                     pass
+            return snap
+
+        def poll_changes():
+            watcher["last_mtime"] = _snapshot()
             while watcher["active"]:
                 time.sleep(2)
-                changed = []
-                for fp, old_mtime in list(watcher["last_mtime"].items()):
-                    try:
-                        new_mtime = os.path.getmtime(fp)
-                        if new_mtime > old_mtime:
-                            watcher["last_mtime"][fp] = new_mtime
-                            changed.append(fp)
-                    except OSError:
-                        pass
+                current = _snapshot()
+                prev = watcher["last_mtime"]
+                # Re-snapshotting each cycle catches NEWLY-CREATED files, not just
+                # modifications to files that existed when the watch started.
+                changed = [fp for fp, mt in current.items()
+                           if fp not in prev or mt > prev[fp]]
+                watcher["last_mtime"] = current
                 if changed:
                     rel_paths = [os.path.relpath(p, self.cwd) for p in changed]
                     self.console.print(f"\n  [cyan]\u27f3 Files changed:[/] {', '.join(rel_paths)}")

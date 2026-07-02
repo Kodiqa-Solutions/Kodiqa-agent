@@ -21,6 +21,18 @@ class SessionStore:
     def __init__(self, agent):
         self.agent = agent
 
+    @staticmethod
+    def _atomic_write_json(path, data, indent=None):
+        """Write JSON to a temp file then os.replace() it into place, so a crash
+        mid-write can't truncate/corrupt the target — critical for the crash-recovery
+        and history files (a partial write would defeat the whole point)."""
+        tmp = f"{path}.tmp"
+        with open(tmp, "w") as f:
+            json.dump(data, f, indent=indent)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+
     def save(self):
         """Auto-save conversation to disk for recovery."""
         agent = self.agent
@@ -41,8 +53,7 @@ class SessionStore:
             while saveable and _unresolved_toolcall(saveable[-1]):
                 saveable.pop()
             data = {"model": agent.model, "cwd": agent.cwd, "history": saveable}
-            with open(agent.session_file, "w") as f:
-                json.dump(data, f)
+            self._atomic_write_json(agent.session_file, data)
         except Exception:
             _logger.debug("ignored error in save", exc_info=True)
 
@@ -166,16 +177,23 @@ class SessionStore:
                         index = json.load(f)
                 except Exception:
                     index = []
-            entry["id"] = len(index) + 1
+            # Monotonic id from the highest existing id — NOT len(index)+1, which
+            # collides on 101 forever once the index is trimmed to 100 (overwriting
+            # session_101.json and making /history & --resume load the wrong file).
+            entry["id"] = max((e.get("id", 0) for e in index), default=0) + 1
             index.append(entry)
             if len(index) > 100:
-                index = index[-100:]
-            with open(index_file, "w") as f:
-                json.dump(index, f, indent=2)
-            # Save full session
+                dropped, index = index[:-100], index[-100:]
+                for d in dropped:  # prune orphaned session files so disk doesn't grow forever
+                    try:
+                        os.remove(os.path.join(history_dir, f"session_{d.get('id')}.json"))
+                    except OSError:
+                        pass
+            self._atomic_write_json(index_file, index, indent=2)
+            # Save full session (atomically)
             saveable = [m for m in agent.history if isinstance(m.get("content"), str)]
             session_file = os.path.join(history_dir, f"session_{entry['id']}.json")
-            with open(session_file, "w") as f:
-                json.dump({"model": agent.model, "cwd": agent.cwd, "history": saveable}, f)
+            self._atomic_write_json(
+                session_file, {"model": agent.model, "cwd": agent.cwd, "history": saveable})
         except Exception:
             _logger.debug("ignored error in archive", exc_info=True)
