@@ -1,6 +1,7 @@
 """Kodiqa MCP (Model Context Protocol) client — connects to external tool servers."""
 
 import json
+import queue
 import subprocess
 import threading
 import time
@@ -43,6 +44,8 @@ class MCPServer:
         self.tools = []
         self._id = 0
         self._lock = threading.Lock()
+        self._read_queue = queue.Queue()   # lines from the single persistent reader
+        self._reader_started = False
 
     def start(self):
         """Start the MCP server process."""
@@ -82,25 +85,34 @@ class MCPServer:
         }})
         return _extract_tool_result(resp)
 
+    def _reader_loop(self):
+        """Continuously read framed lines from the server's stdout onto a queue.
+        Exactly ONE of these runs per server for its whole lifetime — so timeouts
+        never leave orphaned reader threads and two threads never race the same pipe
+        (which used to interleave/desync the JSON-RPC channel)."""
+        try:
+            for line in iter(self.process.stdout.readline, ""):
+                self._read_queue.put(line)
+        except Exception:
+            _logger.debug("MCP '%s' reader loop ended", self.name, exc_info=True)
+        finally:
+            self._read_queue.put(None)  # EOF sentinel so a waiting reader unblocks
+
+    def _ensure_reader(self):
+        if self._reader_started:
+            return
+        if self.process and self.process.stdout:
+            self._reader_started = True
+            threading.Thread(target=self._reader_loop, daemon=True).start()
+
     def _readline_timeout(self, timeout=30):
-        """Read one line from stdout, returning None if it takes longer than `timeout`
-        seconds — so a hung/misbehaving server can't block Kodiqa indefinitely."""
-        result = {}
-
-        def _read():
-            try:
-                result["line"] = self.process.stdout.readline()
-            except Exception as e:
-                result["err"] = e
-
-        t = threading.Thread(target=_read, daemon=True)
-        t.start()
-        t.join(timeout)
-        if t.is_alive():
-            return None  # timed out
-        if "err" in result:
-            raise result["err"]
-        return result.get("line")
+        """Return the next line from the persistent reader, or None if none arrives
+        within `timeout` seconds (a hung server can't block Kodiqa indefinitely)."""
+        self._ensure_reader()
+        try:
+            return self._read_queue.get(timeout=timeout)
+        except queue.Empty:
+            return None
 
     def _send(self, message, timeout=30):
         """Send a JSON-RPC request and read lines until the response whose `id`

@@ -31,9 +31,11 @@ def sample_tree(tmp_path):
 @pytest.fixture
 def memory_store():
     """In-memory SQLite MemoryStore (no disk I/O)."""
+    import threading
     from memory import MemoryStore
     store = MemoryStore.__new__(MemoryStore)
-    store.conn = sqlite3.connect(":memory:")
+    store._lock = threading.Lock()
+    store.conn = sqlite3.connect(":memory:", check_same_thread=False)  # mirror the real store
     store.conn.row_factory = sqlite3.Row
     store.conn.execute("""
         CREATE TABLE IF NOT EXISTS memories (

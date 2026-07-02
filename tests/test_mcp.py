@@ -74,7 +74,7 @@ class TestMCPServer:
         s.process = MagicMock()
         s.process.poll.return_value = None
         response = {"jsonrpc": "2.0", "id": 1, "result": {"ok": True}}
-        s.process.stdout.readline.return_value = json.dumps(response) + "\n"
+        s.process.stdout.readline.side_effect = [json.dumps(response) + "\n", ""]
         result = s._send({"jsonrpc": "2.0", "method": "test"})
         assert result == response
 
@@ -120,7 +120,7 @@ class TestMCPServer:
         resp = {"jsonrpc": "2.0", "id": 1, "result": {
             "content": [{"type": "text", "text": "hello world"}]
         }}
-        s.process.stdout.readline.return_value = json.dumps(resp) + "\n"
+        s.process.stdout.readline.side_effect = [json.dumps(resp) + "\n", ""]
         result = s.call_tool("read", {"path": "/tmp/test"})
         assert result == "hello world"
 
@@ -129,7 +129,7 @@ class TestMCPServer:
         s.process = MagicMock()
         s.process.poll.return_value = None
         resp = {"jsonrpc": "2.0", "id": 1, "error": {"code": -1, "message": "not found"}}
-        s.process.stdout.readline.return_value = json.dumps(resp) + "\n"
+        s.process.stdout.readline.side_effect = [json.dumps(resp) + "\n", ""]
         result = s.call_tool("read", {})
         assert "MCP error" in result
         assert "not found" in result

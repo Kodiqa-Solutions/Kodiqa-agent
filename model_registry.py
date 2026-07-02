@@ -193,6 +193,7 @@ class ModelRegistry:
             if pick.isdigit() and 1 <= int(pick) <= len(choices):
                 new_model, prov_name = choices[int(pick) - 1]
                 self.agent.model = new_model
+                self.agent._last_context_tokens = 0  # re-measure context for the new model
                 self.agent.multi_models = []
                 if prov_name == "claude":
                     self.agent._stop_ollama()

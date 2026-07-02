@@ -1193,7 +1193,10 @@ class Kodiqa:
         try:
             while True:
                 try:
-                    w = os.get_terminal_size().columns
+                    try:
+                        w = os.get_terminal_size().columns
+                    except OSError:
+                        w = 80  # stdout not a tty (piped/CI/detached) — use a sane default
                     user_input = self._pt_session.prompt(
                         [('class:separator', '─' * w + '\n'), ('class:prompt', '❯ ')],
                         reserve_space_for_menu=0,
@@ -1378,21 +1381,31 @@ class Kodiqa:
                 )
 
     def _quit(self):
-        self._save_session()
-        self._save_session_summary()
-        self._save_session_to_history()
-        # Stop watchers
+        # Each teardown step is guarded so one failure (e.g. a hung provider during the
+        # summary, or a closed socket) can't abort the rest or escape to a traceback.
+        for step in (self._save_session, self._save_session_summary,
+                     self._save_session_to_history):
+            try:
+                step()
+            except Exception:
+                _logger.debug("ignored error in quit step %s", step.__name__, exc_info=True)
         for w in self._watchers.values():
             w["active"] = False
         self._watchers.clear()
-        self.memory.close()
-        self.mcp.stop_all()
+        for step in (self.memory.close, self.mcp.stop_all):
+            try:
+                step()
+            except Exception:
+                _logger.debug("ignored error in quit teardown", exc_info=True)
         if self.config.get("unload_ollama_on_exit", True):
             try:
                 self.ollama.unload_models()  # free the model's RAM (keep_alive=0)
             except Exception:
                 _logger.debug("ignored error unloading ollama models on quit", exc_info=True)
-        self._stop_ollama()
+        try:
+            self._stop_ollama()
+        except Exception:
+            _logger.debug("ignored error stopping ollama on quit", exc_info=True)
         self.console.print("[dim]Goodbye! Session saved.[/]")
 
     def _track_tool(self, tool_name):
@@ -1411,33 +1424,49 @@ class Kodiqa:
     def _save_session_to_history(self):
         self.sessions.archive()
 
+    def _generate_exit_summary(self, timeout=15):
+        """Generate the session summary in a worker thread so a slow or offline
+        provider can't block quit for the full request timeout (up to 2 min).
+        Returns "" if it doesn't finish within `timeout` seconds."""
+        result = {}
+        summary_prompt = (
+            "Write a brief session summary (5-10 lines max) of what was discussed and done. "
+            "Include: key decisions, files changed, problems solved, and any pending tasks. "
+            "Format as bullet points. Start with '## Last Session' header."
+        )
+
+        def _work():
+            try:
+                if is_claude_model(self.model):
+                    result["s"] = self._claude_nostream(summary_prompt, self.history)
+                elif self._get_provider_for_model(self.model):
+                    result["s"] = self._openai_compat_nostream(summary_prompt, self.history)
+                else:
+                    msgs = self._build_ollama_messages(summary_prompt)
+                    msgs.append({"role": "user", "content": summary_prompt})
+                    resp = requests.post(
+                        f"{OLLAMA_URL}/api/chat",
+                        json={"model": self.model, "messages": msgs, "stream": False},
+                        timeout=timeout,
+                    )
+                    resp.raise_for_status()
+                    result["s"] = resp.json().get("message", {}).get("content", "")
+            except Exception:
+                _logger.debug("exit summary generation failed", exc_info=True)
+
+        t = threading.Thread(target=_work, daemon=True)
+        t.start()
+        t.join(timeout)
+        return result.get("s", "")
+
     def _save_session_summary(self):
-        """Auto-save conversation summary to project context file on quit."""
-        # Only save if there was meaningful conversation (at least 2 exchanges)
+        """Auto-save conversation summary to project context file on quit (best-effort).
+        Disable with `summarize_on_exit: false` in config to avoid the API call/latency."""
         user_msgs = [m for m in self.history if m.get("role") == "user"]
-        if len(user_msgs) < 2:
+        if len(user_msgs) < 2 or not self.config.get("summarize_on_exit", True):
             return
         try:
-            # Generate summary using current model
-            summary_prompt = (
-                "Write a brief session summary (5-10 lines max) of what was discussed and done. "
-                "Include: key decisions, files changed, problems solved, and any pending tasks. "
-                "Format as bullet points. Start with '## Last Session' header."
-            )
-            if is_claude_model(self.model):
-                summary = self._claude_nostream(summary_prompt, self.history)
-            elif self._get_provider_for_model(self.model):
-                summary = self._openai_compat_nostream(summary_prompt, self.history)
-            else:
-                msgs = [{"role": "system", "content": summary_prompt}] + self.history
-                msgs.append({"role": "user", "content": summary_prompt})
-                resp = requests.post(
-                    f"{OLLAMA_URL}/api/chat",
-                    json={"model": self.model, "messages": msgs, "stream": False},
-                    timeout=60,
-                )
-                resp.raise_for_status()
-                summary = resp.json().get("message", {}).get("content", "")
+            summary = self._generate_exit_summary()
             if not summary or not summary.strip():
                 return
             # Save to project context file
@@ -1753,6 +1782,7 @@ class Kodiqa:
             if pick.isdigit() and 1 <= int(pick) <= len(choices):
                 alias, full, prov = choices[int(pick) - 1]
                 self.model = full
+                self._last_context_tokens = 0  # re-measure context for the new model
                 self.multi_models = []
                 if prov == "claude":
                     self._stop_ollama()
@@ -1807,6 +1837,7 @@ class Kodiqa:
                 if arg in MODEL_ALIASES:
                     new_model = MODEL_ALIASES[arg]
         self.model = new_model
+        self._last_context_tokens = 0  # re-measure context for the new model
         self.multi_models = []
         # Determine provider for display
         if resolved_prov == "claude" or is_claude_model(self.model) or self._is_live_claude(self.model):
@@ -3061,8 +3092,14 @@ class Kodiqa:
                 for block in c:
                     if isinstance(block, dict):
                         total += len(str(block.get("content", ""))) + len(str(block.get("text", "")))
+                        if block.get("type") == "tool_use":  # Claude tool args
+                            total += len(str(block.get("input", "")))
                         if block.get("type") in ("image", "image_url"):
                             images += 1
+            # OpenAI-format assistant tool calls live outside `content`.
+            for tc in (m.get("tool_calls") or []):
+                fn = tc.get("function", {})
+                total += len(str(fn.get("arguments", ""))) + len(str(fn.get("name", "")))
         # text ≈ chars/4; + ~1k tokens per image (rough vision cost, NOT base64 length,
         # which would wildly overcount); + ~2k baseline for system prompt + tool schemas.
         return total // 4 + images * 1000 + 2000
@@ -4745,8 +4782,19 @@ class Kodiqa:
 
         def tool_result_text(c):
             if isinstance(c, list):
-                return "\n".join(
-                    str(x.get("text", x)) if isinstance(x, dict) else str(x) for x in c)
+                parts = []
+                for x in c:
+                    if isinstance(x, dict):
+                        # An image tool_result block carries base64 under source/data,
+                        # not "text" — never stringify the whole dict (dumps the base64
+                        # as text, exploding tokens on a provider switch).
+                        if x.get("type") == "image" or "source" in x:
+                            parts.append("[image omitted]")
+                        else:
+                            parts.append(str(x.get("text", "")))
+                    else:
+                        parts.append(str(x))
+                return "\n".join(p for p in parts if p)
             return c if isinstance(c, str) else str(c)
 
         for msg in self.history:
