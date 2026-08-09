@@ -14,7 +14,7 @@
   <a href="#install"><img src="https://img.shields.io/badge/python-3.9+-blue?logo=python&logoColor=white" alt="Python 3.9+"/></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-purple" alt="License"/></a>
   <a href="https://github.com/Kodiqa-Solutions/Kodiqa-agent/actions/workflows/ci.yml"><img src="https://github.com/Kodiqa-Solutions/Kodiqa-agent/actions/workflows/ci.yml/badge.svg" alt="CI"/></a>
-  <a href="#testing"><img src="https://img.shields.io/badge/tests-826%20passing-brightgreen" alt="Tests"/></a>
+  <a href="#testing"><img src="https://img.shields.io/badge/tests-844%20passing-brightgreen" alt="Tests"/></a>
   <a href="#api-setup"><img src="https://img.shields.io/badge/providers-7-cyan" alt="7 Providers"/></a>
   <a href="#26-tools"><img src="https://img.shields.io/badge/commands-84-orange" alt="82 Commands"/></a>
 </p>
@@ -146,7 +146,7 @@ kodiqa
 - **Clipboard patches** — `/patch` applies diffs from clipboard
 - **Changelog** — `/changelog` shows version history
 - **Session stats** — `/stats` shows metrics (files, tools, time, cost)
-- **826 tests** — pytest test suite, all passing
+- **844 tests** — pytest test suite, all passing
 
 ## Arrow-Key UI
 
@@ -577,7 +577,7 @@ find any bugs in this code
   embeddings.py      # RAG vector store (93 lines)
   repomap.py         # Tree-sitter/regex repo map (157 lines)
   bin/kodiqa         # Global install script
-  tests/             # 826 tests (pytest)
+  tests/             # 844 tests (pytest)
   pyproject.toml     # Package config (pip install .)
   requirements.txt   # Dependencies
 
@@ -621,7 +621,7 @@ find any bugs in this code
 ## Testing
 
 ```bash
-pytest -v          # 826 tests, all passing
+pytest -v          # 844 tests, all passing
 ```
 
 ## Requirements

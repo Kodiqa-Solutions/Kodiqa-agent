@@ -4,6 +4,17 @@ All notable changes to Kodiqa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.22.0] - 2026-08-09
+
+**Every setting is now changeable from the terminal, and a stale config can no longer hold you back.** Suite 826 → 844.
+
+### Added
+- **`/config set <key> <value>`** — change any setting without hand-editing JSON. The value is type-checked against the setting (`/config set max_iterations banana` is refused, a mistyped key suggests the right one), saved to `config.json`, and applied to the very next turn — no restart. `/config add` and `/config remove` edit the list settings (`skip_dirs`, `blocked_commands`, `skip_extensions`) one entry at a time, and tab completion offers the keys.
+- **`/config` now shows settings that are pinned to an outdated value**, with the current default beside them, and **`/config reset [key]`** adopts the defaults again (the previous file is backed up).
+
+### Fixed
+- **A setting you never chose could silently override a newer default, forever.** `config.json` is written once as a full snapshot of the defaults, so every value is pinned from the day you installed. When `max_iterations` went from 15 to 40, anyone with an older install stayed at 15 — the agent stopped in the middle of a long task and you had to keep typing "continue" with no indication why. Such values are now visible in `/config` and clearable with `/config reset`.
+
 ## [3.21.2] - 2026-08-09
 
 **Providers that cap output tokens no longer dead-end.** Suite 817 → 826.

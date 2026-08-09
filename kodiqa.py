@@ -37,6 +37,7 @@ from config import (
     CONFIG_FILE, SYSTEM_PROMPT, SKIP_DIRS, SKIP_EXTENSIONS,
     MAX_FILE_SIZE, OPENAI_COMPAT_PROVIDERS,
     CHANGELOG, PERSONAS,
+    DEFAULTS, pinned_config_values, reset_config_keys, set_config_value, coerce_config_value,
     load_settings, save_settings, load_config, save_default_config, load_kodiqaignore,
     is_claude_model, get_openai_provider,
     installed_version, version_is_newer,
@@ -497,6 +498,7 @@ _KEYWORD_ARGS = {
     "/sandbox": ("on", "off"),
     "/lint": ("off",),
     "/mcp": ("add", "remove", "list", "lazy"),
+    "/config": ("set", "add", "remove", "reset", "reload"),
     "/multi": ("all", "single"),
     "/verbose": ("on", "off"),
 }
@@ -550,6 +552,17 @@ class KodiqaCompleter(Completer):
                 else:
                     # Context-aware argument completion
                     cmd = text.strip().split()[0]
+                    if cmd == "/config" and len(text.split()) >= 2:
+                        # After the action word, complete the config KEYS themselves —
+                        # add/remove only make sense for the list settings.
+                        action = text.split()[1].lower()
+                        if action in ("set", "reset", "add", "remove"):
+                            keys = (sorted(k for k, v in DEFAULTS.items() if isinstance(v, list))
+                                    if action in ("add", "remove") else sorted(DEFAULTS))
+                            for k in keys:
+                                if k.startswith(word):
+                                    yield Completion(k, start_position=-len(word))
+                            return
                     if cmd in ("/model",):
                         all_aliases = list(MODEL_ALIASES.keys()) + list(CLAUDE_ALIASES.keys())
                         for pv in OPENAI_COMPAT_PROVIDERS.values():
@@ -869,7 +882,7 @@ class Kodiqa:
 
         ("/mcp", (), "_cmd_mcp", "Tools & UI", "", "Manage MCP tool servers (local + remote/HTTP)"),
         ("/search", (), "_cmd_search", "Tools & UI", "", "Switch search engine"),
-        ("/config", (), "_cmd_config", "Tools & UI", "", "Show/reload config"),
+        ("/config", (), "_cmd_config", "Tools & UI", "[set|add|remove|reset|reload]", "Show config; set any setting from the terminal"),
         ("/env", (), "_cmd_env", "Tools & UI", "", "Show shell environment"),
         ("/lsp", (), "_cmd_lsp", "Tools & UI", "[start|stop|diagnostics <file>]", "Language Server Protocol"),
         ("/voice", (), "_cmd_voice", "Tools & UI", "", "Voice input via Whisper"),
@@ -2409,17 +2422,114 @@ class Kodiqa:
         save_settings(self.settings)
 
     def _cmd_config(self, arg):
-        if arg.strip().lower() == "reload":
-            self.config = load_config()
-            set_hooks(self.config.get("hooks", {}))
+        parts = (arg or "").split(None, 2)
+        action = parts[0].lower() if parts else ""
+        if action == "reload":
+            self._reload_config()
             self.console.print("[green]Config reloaded.[/]")
+            return
+        if action == "set":
+            self._set_config_value(parts[1:])
+            return
+        if action in ("add", "remove"):
+            self._edit_config_list(action, parts[1:])
+            return
+        if action == "reset":
+            self._reset_config_values(parts[1].split() if len(parts) > 1 else [])
+            return
+        self.console.print(Panel(
+            json.dumps(self.config, indent=2, default=list),
+            title="Config", border_style="blue",
+        ))
+        # config.json is written once as a full snapshot of the defaults, so a value
+        # the user never chose can silently outlive a later default change. That is
+        # how max_iterations stayed at 15 after the default became 40 — the agent
+        # stopped mid-task and you had to keep typing "continue". Show the drift.
+        pinned = pinned_config_values()
+        if pinned:
+            self.console.print("\n[yellow]Pinned in your config.json — differs from the current default:[/]")
+            for key, (mine, default) in sorted(pinned.items()):
+                self.console.print(f"  [cyan]{key}[/] = {mine} [dim](default: {default})[/]")
+            self.console.print("[dim]Take the defaults with [/][bold]/config reset[/][dim] "
+                               "(or one key: /config reset <key>)[/]")
+        self.console.print(f"[dim]Set: /config set <key> <value>   Edit: {CONFIG_FILE}[/]")
+        self.console.print("[dim]Reload: /config reload[/]")
+
+    def _reload_config(self):
+        self.config = load_config()
+        set_hooks(self.config.get("hooks", {}))
+
+    def _set_config_value(self, parts):
+        """`/config set <key> <value>` — persist a config value so it applies to this
+        turn and every session from now on."""
+        if len(parts) < 2:
+            self.console.print("[yellow]Usage: /config set <key> <value>[/] "
+                               "[dim](e.g. /config set max_iterations 60)[/]")
+            return
+        key, raw = parts[0], parts[1]
+        if key not in DEFAULTS:
+            close = [k for k in DEFAULTS if key.lower() in k.lower()]
+            hint = f" Did you mean: {', '.join(sorted(close))}?" if close else ""
+            self.console.print(f"[red]Unknown config key '{key}'.[/]{hint}")
+            self.console.print("[dim]See all keys with /config[/]")
+            return
+        try:
+            value = coerce_config_value(key, raw)
+        except ValueError as e:
+            self.console.print(f"[red]{e}[/]")
+            return
+        previous = self.config.get(key)
+        set_config_value(key, value)
+        self._reload_config()  # applies to the very next turn, no restart needed
+        self.console.print(f"[green]●[/] {key}: {previous} → [cyan]{value}[/] "
+                           "[dim](saved — applies to every session)[/]")
+
+    def _edit_config_list(self, action, parts):
+        """`/config add|remove <key> <value>` — edit a list config value without
+        having to hand-write JSON (skip_dirs, blocked_commands, skip_extensions)."""
+        if len(parts) < 2:
+            self.console.print(f"[yellow]Usage: /config {action} <key> <value>[/] "
+                               "[dim](e.g. /config add skip_dirs .next)[/]")
+            return
+        key, value = parts[0], parts[1].strip()
+        if not isinstance(DEFAULTS.get(key), list):
+            listy = sorted(k for k, v in DEFAULTS.items() if isinstance(v, list))
+            self.console.print(f"[red]{key} is not a list setting.[/] "
+                               f"[dim]List settings: {', '.join(listy)}[/]")
+            return
+        current = list(self.config.get(key, []))
+        if action == "add":
+            if value in current:
+                self.console.print(f"[dim]{value} is already in {key}.[/]")
+                return
+            current.append(value)
         else:
-            self.console.print(Panel(
-                json.dumps(self.config, indent=2, default=list),
-                title="Config", border_style="blue",
-            ))
-            self.console.print(f"[dim]Edit: {CONFIG_FILE}[/]")
-            self.console.print(f"[dim]Reload: /config reload[/]")
+            if value not in current:
+                self.console.print(f"[yellow]{value} is not in {key}.[/]")
+                return
+            current.remove(value)
+        set_config_value(key, current)
+        self._reload_config()
+        verb = "Added to" if action == "add" else "Removed from"
+        self.console.print(f"[green]●[/] {verb} [cyan]{key}[/]: {value} "
+                           f"[dim]({len(current)} entries — saved)[/]")
+
+    def _reset_config_values(self, keys):
+        """Drop pinned config values so the current defaults apply again."""
+        pinned = pinned_config_values()
+        if not pinned:
+            self.console.print("[dim]Nothing pinned — your config already matches the defaults.[/]")
+            return
+        for key in [k for k in keys if k not in pinned]:
+            self.console.print(f"[yellow]{key} is not pinned.[/]")
+        targets = [k for k in keys if k in pinned] if keys else list(pinned)
+        if not targets:
+            return
+        removed = reset_config_keys(targets)
+        self._reload_config()
+        for key in removed:
+            self.console.print(f"  [green]●[/] {key} → [cyan]{self.config.get(key)}[/] [dim](default)[/]")
+        self.console.print(f"[dim]Backup: {CONFIG_FILE}.bak[/]")
 
     def _cmd_tokens(self, arg):
         st = self.session_tokens

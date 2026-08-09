@@ -364,6 +364,11 @@ def version_is_newer(latest, current):
 # ── Changelog ──
 # Canonical changelog is CHANGELOG.md — this list powers the /changelog command
 CHANGELOG = [
+    {"version": "v3.22.0", "date": "2026-08-09", "changes": [
+        "New: /config set <key> <value> changes any setting from the terminal — type-checked, saved, and applied to the next turn without a restart. /config add and /config remove edit list settings; tab completion offers the keys.",
+        "New: /config shows settings pinned to an outdated value next to the current default, and /config reset [key] adopts the defaults again (with a backup).",
+        "Fix: a setting you never chose could silently override a newer default forever — config.json is written once as a full snapshot, so installs predating the max_iterations 15 -> 40 bump stayed at 15 and the agent stopped mid-task with no explanation.",
+    ]},
     {"version": "v3.21.2", "date": "2026-08-09", "changes": [
         "Fix: a provider that caps output tokens below the request (Groq, Cerebras, NVIDIA NIM, ...) is now handled — Kodiqa reads the maximum from the 400, clamps, retries once, and remembers it for that model. The conversation repair added in 3.21.0 previously mistook this for a malformed conversation and suggested /clear, which would not have helped.",
     ]},
@@ -628,6 +633,118 @@ def save_default_config():
         os.makedirs(KODIQA_DIR, exist_ok=True)
         with open(CONFIG_FILE, "w") as f:
             json.dump(DEFAULTS, f, indent=2, default=list)
+
+
+def pinned_config_values():
+    """Return {key: (yours, default)} for config.json entries that differ from the
+    CURRENT default.
+
+    config.json is written once as a full snapshot of the defaults, so a value the
+    user never actually chose keeps overriding a later default change — silently and
+    forever. That is how `max_iterations` stayed at 15 on installs predating the bump
+    to 40: the agent stopped mid-task and the user had to keep typing "continue".
+    Reporting the drift is what makes it fixable.
+    """
+    if not os.path.isfile(CONFIG_FILE):
+        return {}
+    try:
+        with open(CONFIG_FILE, "r") as f:
+            user_config = json.load(f)
+    except Exception:
+        _logger.debug("ignored error in pinned_config_values", exc_info=True)
+        return {}
+    if not isinstance(user_config, dict):
+        return {}
+    pinned = {}
+    for key, mine in user_config.items():
+        if key not in DEFAULTS:
+            continue  # a key the user added deliberately — not drift
+        default = DEFAULTS[key]
+        if isinstance(mine, list) or isinstance(default, list):
+            mine_list = mine if isinstance(mine, list) else []
+            def_list = default if isinstance(default, list) else []
+            if sorted(map(str, mine_list)) != sorted(map(str, def_list)):
+                pinned[key] = (f"[{len(mine_list)} entries]", f"[{len(def_list)} entries]")
+        elif mine != default:
+            pinned[key] = (mine, default)
+    return pinned
+
+
+def coerce_config_value(key, raw):
+    """Parse a command-line config value using the default's type as the schema.
+    Raises ValueError with a usable message when it doesn't fit."""
+    default = DEFAULTS.get(key)
+    text = str(raw).strip()
+    if isinstance(default, bool):
+        if text.lower() in ("1", "true", "yes", "on"):
+            return True
+        if text.lower() in ("0", "false", "no", "off"):
+            return False
+        raise ValueError(f"{key} expects true/false, got {raw!r}")
+    if isinstance(default, int):
+        try:
+            value = int(text)
+        except ValueError:
+            raise ValueError(f"{key} expects a whole number, got {raw!r}")
+        if value <= 0:
+            raise ValueError(f"{key} must be greater than 0")
+        return value
+    if isinstance(default, float):
+        try:
+            return float(text)
+        except ValueError:
+            raise ValueError(f"{key} expects a number, got {raw!r}")
+    if isinstance(default, (list, dict)):
+        try:
+            parsed = json.loads(text)
+        except ValueError:
+            raise ValueError(f"{key} expects JSON ({type(default).__name__}), got {raw!r}")
+        if not isinstance(parsed, type(default)):
+            raise ValueError(f"{key} expects a JSON {type(default).__name__}")
+        return parsed
+    return text
+
+
+def set_config_value(key, value):
+    """Persist one config value to config.json so it applies to every session from
+    now on. Backs the file up first. Returns the stored value."""
+    os.makedirs(KODIQA_DIR, exist_ok=True)
+    user_config = {}
+    if os.path.isfile(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                user_config = loaded
+        except Exception:
+            _logger.debug("ignored error reading config in set_config_value", exc_info=True)
+        shutil.copyfile(CONFIG_FILE, CONFIG_FILE + ".bak")
+    user_config[key] = value
+    with open(CONFIG_FILE, "w") as f:
+        json.dump(user_config, f, indent=2, default=list)
+    return value
+
+
+def reset_config_keys(keys):
+    """Remove keys from config.json so the current defaults apply again. Backs the
+    file up first. Returns the keys actually removed."""
+    if not os.path.isfile(CONFIG_FILE):
+        return []
+    try:
+        with open(CONFIG_FILE, "r") as f:
+            user_config = json.load(f)
+    except Exception:
+        _logger.debug("ignored error in reset_config_keys", exc_info=True)
+        return []
+    removed = [k for k in keys if k in user_config]
+    if not removed:
+        return []
+    shutil.copyfile(CONFIG_FILE, CONFIG_FILE + ".bak")
+    for key in removed:
+        user_config.pop(key, None)
+    with open(CONFIG_FILE, "w") as f:
+        json.dump(user_config, f, indent=2, default=list)
+    return removed
 
 
 def load_settings():
