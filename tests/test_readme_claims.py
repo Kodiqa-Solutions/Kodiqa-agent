@@ -11,6 +11,7 @@ import re
 from pathlib import Path
 
 from kodiqa import Kodiqa
+from tools import CLAUDE_TOOLS
 
 README = (Path(__file__).resolve().parent.parent / "README.md").read_text(encoding="utf-8")
 TESTS_DIR = Path(__file__).resolve().parent
@@ -45,6 +46,17 @@ class TestReadmeClaims:
         for claimed in re.findall(r"(\d+) tests", README):
             assert int(claimed) <= actual, (
                 f"README claims {claimed} tests but only {actual} exist")
+
+    def test_tool_count_is_consistent(self):
+        """`todo_write` was added as "the 27th tool", which actually made it 28 — the
+        docs said 27 for three releases. Lock the two canonical claims (the tagline and
+        the feature bullet) to the schema list. Other "N tools" strings in the README
+        describe demos (e.g. MCP tools discovered on demand), not Kodiqa's tool count."""
+        claims = re.findall(r"(\d+) tools &bull;", README) + re.findall(r"\*\*(\d+) tools\*\*", README)
+        assert claims, "no canonical tool-count claim found in README"
+        for claimed in claims:
+            assert int(claimed) == len(CLAUDE_TOOLS), (
+                f"README claims {claimed} tools but {len(CLAUDE_TOOLS)} are defined")
 
     def test_provider_count_is_consistent(self):
         from config import OPENAI_COMPAT_PROVIDERS
