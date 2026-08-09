@@ -14,7 +14,7 @@ from unittest.mock import MagicMock
 from rich.console import Console
 
 import kodiqa
-from kodiqa import Kodiqa, _parse_ollama_tool_call
+from kodiqa import Kodiqa, _invalid_tool_args_reason, _parse_ollama_tool_call
 from ollama_manager import OllamaManager
 
 
@@ -33,9 +33,11 @@ class TestParseOllamaToolCall:
         assert out["input"] == {"pattern": "x"}
         assert out["id"] == "call_2"
 
-    def test_unparsable_string_arguments_become_empty(self):
+    def test_unparsable_string_arguments_are_marked_not_emptied(self):
+        """Empty args would make the tool report a MISSING argument and hide the real
+        cause; the marker lets the loop tell the model its JSON was broken."""
         out = _parse_ollama_tool_call({"function": {"name": "grep", "arguments": '{"pattern": '}}, 0)
-        assert out["input"] == {}
+        assert _invalid_tool_args_reason(out["input"]) is not None
 
     def test_explicit_id_wins_over_synthesized(self):
         out = _parse_ollama_tool_call({"id": "abc", "function": {"name": "tree", "arguments": {}}}, 5)
@@ -48,9 +50,9 @@ class TestParseOllamaToolCall:
         assert _parse_ollama_tool_call({"function": {"arguments": {}}}, 0) is None  # no name
         assert _parse_ollama_tool_call({"function": {"name": "", "arguments": {}}}, 0) is None
 
-    def test_non_dict_arguments_become_empty(self):
+    def test_non_dict_arguments_are_marked(self):
         out = _parse_ollama_tool_call({"function": {"name": "tree", "arguments": ["x"]}}, 0)
-        assert out["input"] == {}
+        assert "expected a JSON object" in _invalid_tool_args_reason(out["input"])
 
 
 class TestModelCapabilities:

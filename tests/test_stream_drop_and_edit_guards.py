@@ -415,6 +415,95 @@ class TestHealAndRetryIntegration:
         assert "/compact" in k.console.file.getvalue()
 
 
+class TestInvalidToolArguments:
+    """A tool call whose arguments are unparsable JSON must NOT run with {} — that
+    makes the tool report a missing argument, so the model fixes the wrong thing."""
+
+    def _agent(self):
+        k = MagicMock()
+        k.console = _console()
+        k.batch_edits = False
+        k.toon_enabled = False
+        k._MCP_META_NAMES = Kodiqa._MCP_META_NAMES
+        k._run_status = Kodiqa._run_status.__get__(k)
+        return k
+
+    def test_bad_call_is_not_executed_and_explains_itself(self):
+        k = self._agent()
+        bad = {"id": "c1", "name": "write_file",
+               "input": kodiqa._invalid_tool_args("Expecting ',' delimiter")}
+        results, _lint, _review = Kodiqa._run_tool_calls(k, [bad])
+        assert k._execute_tool.call_count == 0  # never dispatched
+        assert len(results) == 1
+        tc_id, text = results[0]
+        assert tc_id == "c1"
+        assert "not valid JSON" in text and "Nothing was executed" in text
+        assert "Expecting ',' delimiter" in text
+
+    def test_good_calls_in_the_same_turn_still_run(self):
+        k = self._agent()
+        k._execute_tool.return_value = "file body"
+        good = {"id": "ok", "name": "read_file", "input": {"path": "a.py"}}
+        bad = {"id": "bad", "name": "write_file",
+               "input": kodiqa._invalid_tool_args("unterminated string")}
+        results, _lint, _review = Kodiqa._run_tool_calls(k, [good, bad])
+        by_id = dict(results)
+        assert by_id["ok"] == "file body"
+        assert "not valid JSON" in by_id["bad"]
+        assert k._execute_tool.call_count == 1
+
+    def test_marker_helpers(self):
+        assert kodiqa._invalid_tool_args_reason({"path": "a.py"}) is None
+        assert kodiqa._invalid_tool_args_reason(None) is None
+        assert kodiqa._invalid_tool_args_reason(kodiqa._invalid_tool_args("boom")) == "boom"
+
+    def test_reason_is_length_capped(self):
+        marker = kodiqa._invalid_tool_args("x" * 500)
+        assert len(kodiqa._invalid_tool_args_reason(marker)) == 200
+
+
+class TestOllamaActionFallback:
+    """A tools-capable model that answers in the old [ACTION] text format should still
+    act, and history must keep a matching tool_call for every tool result."""
+
+    def _agent(self, response):
+        k = MagicMock()
+        k.history = []
+        k.console = _console()
+        k._stream_interrupted = False
+        k._stream_ollama.return_value = response
+        k._get_openai_tools.return_value = []
+        k._assistant_msg = Kodiqa._assistant_msg.__get__(k)
+        k._append_tool_results = Kodiqa._append_tool_results.__get__(k)
+        k._run_tool_calls.return_value = ([("call_0", "done")], "", "")
+        return k
+
+    def test_action_text_is_executed(self):
+        text = "I'll read it.\n[ACTION: read_file]\npath: a.py\n[/ACTION]"
+        k = self._agent({"text": text, "tool_calls": []})
+        assert Kodiqa._run_ollama_native_turn(k) is True
+        called = k._run_tool_calls.call_args[0][0]
+        assert [tc["name"] for tc in called] == ["read_file"]
+        # history keeps a tool_call for the synthesized result — no orphan
+        assert k.history[0]["tool_calls"][0]["function"]["name"] == "read_file"
+        assert k.history[1]["role"] == "tool"
+
+    def test_plain_prose_still_ends_the_turn(self):
+        k = self._agent({"text": "All done, nothing to change.", "tool_calls": []})
+        assert Kodiqa._run_ollama_native_turn(k) is False
+        assert k._run_tool_calls.call_count == 0
+        assert k.history == [{"role": "assistant", "content": "All done, nothing to change."}]
+
+    def test_native_tool_calls_take_precedence(self):
+        """A real tool call must never be second-guessed by the text parser."""
+        text = "[ACTION: delete_file]\npath: /etc/passwd\n[/ACTION]"
+        k = self._agent({"text": text, "tool_calls": [
+            {"id": "call_0", "name": "read_file", "input": {"path": "a.py"}}]})
+        Kodiqa._run_ollama_native_turn(k)
+        called = k._run_tool_calls.call_args[0][0]
+        assert [tc["name"] for tc in called] == ["read_file"]
+
+
 class TestOllamaThinkingField:
     def _agent(self):
         k = MagicMock()

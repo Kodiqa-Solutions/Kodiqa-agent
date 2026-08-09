@@ -4,6 +4,15 @@ All notable changes to Kodiqa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.21.1] - 2026-08-09
+
+**Follow-up to 3.21.0.** Suite 805 → 817.
+
+### Fixed
+- **A tool call with malformed arguments now says so, instead of running with none.** When a model sent arguments that weren't valid JSON, they were silently replaced with an empty object — the tool then failed on a *missing argument*, so the model was told "path is required" when the real problem was its own broken JSON, and it usually looped fixing the wrong thing. The call is no longer executed at all; the model is told its JSON was invalid and asked to resend.
+- **A local model that answers in the old `[ACTION]` format still acts.** With native tool calling on, a tool-capable model that fell back to the text protocol out of habit ended the turn with an explanation and no action. Those blocks are now executed, and the conversation keeps a matching tool call for every result.
+- **README counts corrected** (tests, commands, providers) and locked with contract tests, so a stale badge can't ship again — these are shown on the PyPI project page too.
+
 ## [3.21.0] - 2026-08-09
 
 **Local models get real tool calling, and streams stop losing your work.** Two features and four fixes; suite 731 → 805.

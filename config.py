@@ -364,6 +364,11 @@ def version_is_newer(latest, current):
 # ── Changelog ──
 # Canonical changelog is CHANGELOG.md — this list powers the /changelog command
 CHANGELOG = [
+    {"version": "v3.21.1", "date": "2026-08-09", "changes": [
+        "Fix: a tool call with malformed JSON arguments is no longer run with empty arguments — the model was told 'path is required' when the real problem was its own broken JSON, and usually looped fixing the wrong thing. It is now told the arguments were invalid and asked to resend.",
+        "Fix: with native tool calling on, a local model that answers in the old [ACTION] text format now still acts instead of ending the turn with an explanation and no action.",
+        "Docs: README test/command/provider counts corrected and locked with contract tests so a stale badge can't ship again.",
+    ]},
     {"version": "v3.21.0", "date": "2026-08-09", "changes": [
         "Local models can now use NATIVE tool calling instead of text [ACTION] blocks — the same structured tool protocol the cloud providers use. Turn it on with '/tune tools auto' (off by default); '/model' marks which local models support it.",
         "Fix (lost work): a network drop in the MIDDLE of a streamed reply killed the whole turn with 'Something went wrong' — and failover never fired, because it only reacted to a clean failure. Dropped streams are now caught, so retry and failover actually happen.",

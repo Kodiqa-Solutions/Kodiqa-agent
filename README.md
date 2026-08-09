@@ -14,9 +14,9 @@
   <a href="#install"><img src="https://img.shields.io/badge/python-3.9+-blue?logo=python&logoColor=white" alt="Python 3.9+"/></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-purple" alt="License"/></a>
   <a href="https://github.com/Kodiqa-Solutions/Kodiqa-agent/actions/workflows/ci.yml"><img src="https://github.com/Kodiqa-Solutions/Kodiqa-agent/actions/workflows/ci.yml/badge.svg" alt="CI"/></a>
-  <a href="#testing"><img src="https://img.shields.io/badge/tests-566%20passing-brightgreen" alt="Tests"/></a>
+  <a href="#testing"><img src="https://img.shields.io/badge/tests-817%20passing-brightgreen" alt="Tests"/></a>
   <a href="#api-setup"><img src="https://img.shields.io/badge/providers-7-cyan" alt="7 Providers"/></a>
-  <a href="#26-tools"><img src="https://img.shields.io/badge/commands-82-orange" alt="82 Commands"/></a>
+  <a href="#26-tools"><img src="https://img.shields.io/badge/commands-84-orange" alt="82 Commands"/></a>
 </p>
 
 <p align="center">
@@ -146,7 +146,7 @@ kodiqa
 - **Clipboard patches** — `/patch` applies diffs from clipboard
 - **Changelog** — `/changelog` shows version history
 - **Session stats** — `/stats` shows metrics (files, tools, time, cost)
-- **710 tests** — pytest test suite, all passing
+- **817 tests** — pytest test suite, all passing
 
 ## Arrow-Key UI
 
@@ -464,7 +464,7 @@ Use `/verbose` to toggle full output (see all code as it streams).
 
 ## API Setup
 
-Use `/key` to add API keys interactively (shows all 6 providers), or specify directly:
+Use `/key` to add API keys interactively (shows all 7 providers), or specify directly:
 
 | Provider | Command | Get Key |
 |----------|---------|---------|
@@ -577,7 +577,7 @@ find any bugs in this code
   embeddings.py      # RAG vector store (93 lines)
   repomap.py         # Tree-sitter/regex repo map (157 lines)
   bin/kodiqa         # Global install script
-  tests/             # 710 tests (pytest)
+  tests/             # 817 tests (pytest)
   pyproject.toml     # Package config (pip install .)
   requirements.txt   # Dependencies
 
@@ -621,7 +621,7 @@ find any bugs in this code
 ## Testing
 
 ```bash
-pytest -v          # 710 tests, all passing
+pytest -v          # 817 tests, all passing
 ```
 
 ## Requirements

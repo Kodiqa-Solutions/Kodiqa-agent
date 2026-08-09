@@ -95,6 +95,25 @@ def _setup_error_log():
     return logger
 
 
+# Marker for a tool call whose arguments the model sent as invalid JSON. Running the
+# tool with {} instead makes it fail on a MISSING ARGUMENT, so the model is told
+# "path is required" when the real problem was its own malformed JSON — and it
+# usually loops. Carrying the marker lets the loop answer with the actual reason.
+_INVALID_TOOL_ARGS = "__kodiqa_invalid_tool_args__"
+
+
+def _invalid_tool_args(detail):
+    """Tool input standing in for arguments that could not be parsed."""
+    return {_INVALID_TOOL_ARGS: str(detail)[:200]}
+
+
+def _invalid_tool_args_reason(params):
+    """The parse error if this input is an invalid-arguments marker, else None."""
+    if isinstance(params, dict) and _INVALID_TOOL_ARGS in params:
+        return params[_INVALID_TOOL_ARGS]
+    return None
+
+
 # A stream can die AFTER the response headers: the upstream drops the connection, a
 # proxy cuts a long response, WiFi blips. requests.RequestException covers
 # ChunkedEncodingError/ConnectionError/Timeout; OSError and http.client.HTTPException
@@ -127,11 +146,11 @@ def _parse_ollama_tool_call(call, index):
     if isinstance(args, str):
         try:
             args = json.loads(args) if args.strip() else {}
-        except (ValueError, TypeError):
+        except (ValueError, TypeError) as e:
             _logger.debug("unparsable ollama tool arguments for %s", name, exc_info=True)
-            args = {}
+            args = _invalid_tool_args(e)
     if not isinstance(args, dict):
-        args = {}
+        args = _invalid_tool_args(f"expected a JSON object, got {type(args).__name__}")
     return {"id": call.get("id") or f"call_{index}", "name": name, "input": args}
 
 
@@ -4282,11 +4301,26 @@ class Kodiqa:
         # Three groups. Lazy-MCP meta-tools (mcp_search/mcp_tool_schema/mcp_call) MUST
         # route through _execute_tool -> _mcp_meta_call, NOT _dispatch (which has no
         # handler for them and would return "Unknown tool" when batched with others).
+        # Calls whose arguments arrived as unparsable JSON never reach a tool: running
+        # them with {} reports a MISSING ARGUMENT and hides the real cause, so the model
+        # "fixes" the wrong thing and usually loops.
+        bad_calls = [tc for tc in tool_calls
+                     if _invalid_tool_args_reason(tc.get("input")) is not None]
+        if bad_calls:
+            bad_ids = {id(tc) for tc in bad_calls}
+            tool_calls = [tc for tc in tool_calls if id(tc) not in bad_ids]
         meta_calls = [tc for tc in tool_calls if tc["name"] in self._MCP_META_NAMES]
         mcp_calls = [tc for tc in tool_calls
                      if tc["name"].startswith("mcp_") and tc["name"] not in self._MCP_META_NAMES]
         regular_calls = [tc for tc in tool_calls if not tc["name"].startswith("mcp_")]
         results_list = []
+        for tc in bad_calls:
+            reason = _invalid_tool_args_reason(tc["input"])
+            self.console.print(f"  [yellow]●[/] {tc['name']} [dim](invalid arguments — not run)[/]")
+            _logger.warning("invalid tool arguments for %s: %s", tc["name"], reason)
+            results_list.append((tc["id"], (
+                f"Error: the arguments for {tc['name']} were not valid JSON ({reason}). "
+                "Nothing was executed. Send the tool call again with complete, valid JSON.")))
         if len(regular_calls) > 1:
             allowed_calls, results_list = self._partition_workspace(regular_calls)
             if allowed_calls:
@@ -4589,6 +4623,16 @@ class Kodiqa:
             self.console.print("[dim](no response)[/]")
             self._save_session()
             return False
+        if not tool_calls and text_content:
+            # Some tool-capable models still answer in the classic [ACTION] text format
+            # (habit from their training data). Honour it instead of ending the turn
+            # with an explanation and no action. Synthesized BEFORE the assistant turn
+            # is stored so history keeps a matching tool_call for every tool result.
+            fallback = parse_actions(text_content)
+            if fallback:
+                tool_calls = [{"id": f"call_{i}", "name": a["name"], "input": a.get("params", {})}
+                              for i, a in enumerate(fallback)]
+                _logger.info("ollama native turn fell back to %d [ACTION] block(s)", len(fallback))
         self.history.append(self._assistant_msg("ollama", text_content, tool_calls))
         if not tool_calls:
             self._save_session()
@@ -4859,11 +4903,11 @@ class Kodiqa:
 
                 elif event_type == "content_block_stop":
                     if current_tool is not None:
+                        input_str = "".join(current_tool_json)
                         try:
-                            input_str = "".join(current_tool_json)
                             current_tool["input"] = json.loads(input_str) if input_str else {}
-                        except json.JSONDecodeError:
-                            current_tool["input"] = {}
+                        except json.JSONDecodeError as e:
+                            current_tool["input"] = _invalid_tool_args(e)
                         tool_calls.append(current_tool)
                         current_tool = None
                         current_tool_json = []
@@ -5536,8 +5580,8 @@ class Kodiqa:
             args_str = "".join(tc["arguments"])
             try:
                 input_data = json.loads(args_str) if args_str else {}
-            except json.JSONDecodeError:
-                input_data = {}
+            except json.JSONDecodeError as e:
+                input_data = _invalid_tool_args(e)
             parsed_tools.append({"id": tc["id"], "name": tc["name"], "input": input_data})
 
         return {"text": "".join(full_text), "tool_calls": parsed_tools}
