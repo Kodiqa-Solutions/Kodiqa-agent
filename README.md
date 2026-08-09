@@ -126,7 +126,7 @@ kodiqa
 - **Conversation recovery** — auto-saved sessions, resume on crash or with `kodiqa -c` / `--resume`
 - **Workspace boundary** — asks permission before accessing files outside working directory
 - **Smart Ollama lifecycle** — starts on launch, stops when switching to cloud, restarts on local switch
-- **Dynamic model library** — fetches available Ollama models from ollama.com with pull counts
+- **Dynamic model library** — scrapes ollama.com/library on every launch (never a baked-in list) with pull counts, download sizes, and whether the model fits your RAM
 - **Unlimited iterations** — no artificial cap, AI keeps working until the task is done
 - **Live API model routing** — auto-discovered models from Claude/Qwen APIs routed to correct provider
 - **Auto git commit** — toggle with `/autocommit`, auto-commits after AI edits with descriptive message
