@@ -145,6 +145,9 @@ class TestSameModelRetry:
         k._build_openai_messages.return_value = []
         k._provider_label = Kodiqa._provider_label.__get__(k)
         k._attempt_stream = Kodiqa._attempt_stream.__get__(k)
+        k._output_caps = {}
+        k._output_token_budget = Kodiqa._output_token_budget.__get__(k)
+        k._learn_output_cap = Kodiqa._learn_output_cap.__get__(k)
         k._heal_history.return_value = ""  # nothing repairable in these scenarios
         k._failover_candidates.return_value = [
             ("claude", None, "claude-sonnet-4-6"),
@@ -348,6 +351,9 @@ class TestHealAndRetryIntegration:
         k._build_openai_messages.return_value = []
         k._provider_label = Kodiqa._provider_label.__get__(k)
         k._attempt_stream = Kodiqa._attempt_stream.__get__(k)
+        k._output_caps = {}
+        k._output_token_budget = Kodiqa._output_token_budget.__get__(k)
+        k._learn_output_cap = Kodiqa._learn_output_cap.__get__(k)
         k._report_unhealable_client_error = Kodiqa._report_unhealable_client_error.__get__(k)
         return k
 
@@ -502,6 +508,131 @@ class TestOllamaActionFallback:
         Kodiqa._run_ollama_native_turn(k)
         called = k._run_tool_calls.call_args[0][0]
         assert [tc["name"] for tc in called] == ["read_file"]
+
+
+class TestOutputTokenCap:
+    """Some providers cap output tokens below what we ask for and 400 the whole
+    request. That is neither a broken message shape nor a too-long conversation —
+    misreading it made the healer delete good turns and advise /clear for nothing."""
+
+    def test_parses_the_named_maximum(self):
+        for text, want in [
+            ("max_completion_tokens must be less than or equal to 4096, got 8192", 4096),
+            ("`max_tokens` must not exceed 2048", 2048),
+            ("max_tokens <= 1024", 1024),
+            ("maximum value for max_tokens is 16384", 16384),
+            ("max_tokens: at most 512 allowed", 512),
+        ]:
+            assert kodiqa.parse_output_token_cap(text) == want, text
+
+    def test_ignores_errors_that_are_not_about_output_tokens(self):
+        assert kodiqa.parse_output_token_cap("") is None
+        assert kodiqa.parse_output_token_cap(None) is None
+        assert kodiqa.parse_output_token_cap("invalid role sequence") is None
+        # a context-length 400 also carries numbers — it must NOT be read as a cap
+        assert kodiqa.parse_output_token_cap(
+            "This model's maximum context length is 65536 tokens") is None
+
+    def test_budget_defaults_then_follows_a_learned_cap(self):
+        k = MagicMock()
+        k.model = "groq/llama"
+        k._output_caps = {}
+        k.console = _console()
+        assert Kodiqa._output_token_budget(k) == kodiqa.DEFAULT_OUTPUT_TOKENS
+        k._output_token_budget = Kodiqa._output_token_budget.__get__(k)
+        assert Kodiqa._learn_output_cap(k, "max_tokens must be less than or equal to 4096") is True
+        assert Kodiqa._output_token_budget(k) == 4096
+
+    def test_a_cap_is_learned_only_once(self):
+        k = MagicMock()
+        k.model = "m"
+        k._output_caps = {}
+        k.console = _console()
+        k._output_token_budget = Kodiqa._output_token_budget.__get__(k)
+        err = "max_tokens must be less than or equal to 4096"
+        assert Kodiqa._learn_output_cap(k, err) is True
+        assert Kodiqa._learn_output_cap(k, err) is False  # already at 4096, nothing new
+
+    def test_caps_are_per_model(self):
+        k = MagicMock()
+        k.model = "slow-model"
+        k._output_caps = {}
+        k.console = _console()
+        k._output_token_budget = Kodiqa._output_token_budget.__get__(k)
+        Kodiqa._learn_output_cap(k, "max_tokens must not exceed 1024")
+        k.model = "other-model"
+        assert Kodiqa._output_token_budget(k) == kodiqa.DEFAULT_OUTPUT_TOKENS
+
+    def test_request_body_uses_the_learned_budget(self):
+        k = MagicMock()
+        k.model = "llama-3.3-70b-versatile"
+        k.settings = {}
+        k._output_caps = {"llama-3.3-70b-versatile": 4096}
+        k._output_token_budget = Kodiqa._output_token_budget.__get__(k)
+        k._get_openai_tools.return_value = []
+        body = Kodiqa._build_openai_request_body(k, [], "groq")
+        assert body["max_tokens"] == 4096
+
+    def test_healer_leaves_history_alone_for_a_cap_error(self):
+        k = MagicMock()
+        k.history = [{"role": "assistant", "content": ""}]  # would normally be dropped
+        k._last_context_tokens = 5
+        assert Kodiqa._heal_history(k, "max_tokens must be less than or equal to 4096") == ""
+        assert len(k.history) == 1
+
+
+class TestOutputCapRetryIntegration:
+    def _agent(self):
+        k = MagicMock()
+        k.failover_enabled = False
+        k.model = "llama-3.3-70b-versatile"
+        k.console = _console()
+        k._stream_interrupted = False
+        k._stream_no_failover = False
+        k._last_client_error = ""
+        k._output_caps = {}
+        k._build_openai_messages.return_value = []
+        k._provider_label = Kodiqa._provider_label.__get__(k)
+        k._attempt_stream = Kodiqa._attempt_stream.__get__(k)
+        k._output_token_budget = Kodiqa._output_token_budget.__get__(k)
+        k._learn_output_cap = Kodiqa._learn_output_cap.__get__(k)
+        k._report_unhealable_client_error = Kodiqa._report_unhealable_client_error.__get__(k)
+        k._heal_history.return_value = ""
+        return k
+
+    def test_clamps_and_retries_without_touching_history(self):
+        k = self._agent()
+        calls = {"n": 0}
+
+        def stream(*a, **kw):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                k._stream_no_failover = True
+                k._last_client_error = "max_tokens must be less than or equal to 4096"
+                return None
+            return {"text": "fits now", "tool_calls": []}
+
+        k._call_openai_compat_stream.side_effect = stream
+        resp, _, _ = Kodiqa._stream_native_with_failover(k, "openai", "groq", "SYS")
+        assert resp == {"text": "fits now", "tool_calls": []}
+        assert k._output_caps["llama-3.3-70b-versatile"] == 4096
+        assert k._heal_history.call_count == 0  # history never touched
+        assert "caps output at 4,096" in k.console.file.getvalue()
+
+    def test_gives_honest_advice_when_clamping_does_not_help(self):
+        k = self._agent()
+
+        def stream(*a, **kw):
+            k._stream_no_failover = True
+            k._last_client_error = "max_tokens must be less than or equal to 4096"
+            return None
+
+        k._call_openai_compat_stream.side_effect = stream
+        resp, _, _ = Kodiqa._stream_native_with_failover(k, "openai", "groq", "SYS")
+        assert resp is None
+        out = k.console.file.getvalue()
+        assert "Try another model" in out
+        assert "/clear" not in out  # the old, misleading advice
 
 
 class TestOllamaThinkingField:

@@ -114,6 +114,44 @@ def _invalid_tool_args_reason(params):
     return None
 
 
+DEFAULT_OUTPUT_TOKENS = 8192
+
+# Some providers (Groq, Cerebras, NVIDIA NIM, …) cap output tokens BELOW what we ask
+# for and reject the whole request with a 400 that names the allowed maximum. Parsing
+# it lets us clamp and retry instead of reporting a dead end — and it must not be
+# mistaken for a broken message shape, which would delete good turns for nothing.
+_OUTPUT_CAP_FIELDS = ("max_completion_tokens", "max_tokens")
+_CAP_NUM = r"[`'\"]?(\d+)[`'\"]?"
+_OUTPUT_CAP_PATTERNS = tuple(re.compile(p) for p in (
+    rf"less than or equal to\s+{_CAP_NUM}",
+    rf"smaller than or equal to\s+{_CAP_NUM}",
+    rf"<=\s*{_CAP_NUM}",
+    rf"at most\s+{_CAP_NUM}",
+    rf"must not exceed\s+{_CAP_NUM}",
+    rf"maximum(?:\s+value)?(?:\s+for\s+\S+)?\s+is\s+{_CAP_NUM}",
+    rf"maximum(?:\s+allowed)?(?:\s+value)?\s+of\s+{_CAP_NUM}",
+))
+
+
+def parse_output_token_cap(error_text):
+    """Return the output-token maximum a 400 names, or None if it isn't one.
+
+    Only treated as an output-cap rejection when the message actually mentions an
+    output-token field — otherwise a context-length 400 (which also carries numbers)
+    would be misread as one.
+    """
+    text = error_text or ""
+    if not any(f in text for f in _OUTPUT_CAP_FIELDS):
+        return None
+    for pattern in _OUTPUT_CAP_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            cap = int(match.group(1))
+            if 0 < cap < 10_000_000:
+                return cap
+    return None
+
+
 # A stream can die AFTER the response headers: the upstream drops the connection, a
 # proxy cuts a long response, WiFi blips. requests.RequestException covers
 # ChunkedEncodingError/ConnectionError/Timeout; OSError and http.client.HTTPException
@@ -635,6 +673,7 @@ class Kodiqa:
         self._stream_interrupted = False  # set True when Esc/Ctrl+C aborts a stream; init'd here so an early request failure (before _start_stream_interrupt) never AttributeErrors in failover
         self._stream_no_failover = False  # set True on a client request error (400/422) so failover does NOT cascade to other providers — a malformed request fails identically everywhere
         self._tools_ctx_warned = False  # one num_ctx warning per session when native Ollama tools are on
+        self._output_caps = {}  # model -> output-token cap learned from a provider 400
         self._last_client_error = ""  # 400/422 detail text, so _heal_history can classify it
         # Setup prompt_toolkit for Claude Code-style UI
         self._history_file = os.path.join(KODIQA_DIR, "input_history")
@@ -3949,6 +3988,7 @@ class Kodiqa:
         self._stream_no_failover = False
         self._last_client_error = ""
         healed_once = False
+        capped_once = False
         # Retry the user's OWN model once before switching provider: a dropped stream
         # or a 5xx is usually transient, and silently moving someone off the model they
         # picked is worse than a one-second retry. Not gated on failover_enabled —
@@ -3972,6 +4012,16 @@ class Kodiqa:
                     f"  [yellow]⚠ Failing over to[/] [cyan]{model}[/] "
                     f"[dim]({self._provider_label(k, p)})[/]…")
             response = self._attempt_stream(k, p, system_prompt)
+            # A 400 that names an output-token maximum is neither a bad shape nor a
+            # too-long conversation — just a budget this provider won't accept. Clamp
+            # and retry BEFORE the history healer, which would otherwise delete good
+            # turns chasing a problem that isn't in the messages at all.
+            if (response is None and self._stream_no_failover
+                    and not self._stream_interrupted and not capped_once
+                    and self._learn_output_cap(self._last_client_error)):
+                capped_once = True
+                self._stream_no_failover = False
+                response = self._attempt_stream(k, p, system_prompt)
             # A 400/422 usually means a malformed message shape that is now STUCK in
             # history: every later turn re-sends it and 400s too, so the session is
             # dead until /clear. Heal the history once and retry before giving up.
@@ -3994,6 +4044,25 @@ class Kodiqa:
             self.console.print("[red]All configured providers failed.[/]")
         return None, kind, provider
 
+    def _output_token_budget(self):
+        """Output-token budget for the active model — the default, or a smaller cap
+        learned from a provider's own 400. Learned per model for THIS session only, so
+        a provider that later raises its limit isn't remembered as low forever."""
+        return self._output_caps.get(self.model, DEFAULT_OUTPUT_TOKENS)
+
+    def _learn_output_cap(self, error_text):
+        """Record an output-token cap the provider named in a 400. Returns True when a
+        new, smaller cap was learned, meaning the request is worth retrying."""
+        asked = self._output_token_budget()
+        cap = parse_output_token_cap(error_text)
+        if cap is None or cap >= asked:
+            return False
+        self._output_caps[self.model] = cap
+        _logger.warning("learned output-token cap for %s: %d", self.model, cap)
+        self.console.print(f"  [yellow]↓ {self.model} caps output at {cap:,} tokens[/] "
+                           f"[dim](asked for {asked:,})[/] — retrying…")
+        return True
+
     def _attempt_stream(self, kind, provider, system_prompt):
         """One stream attempt in the active provider's format."""
         if kind == "claude":
@@ -4013,6 +4082,8 @@ class Kodiqa:
         Only called AFTER a real 400/422, and only once per turn, so it can never
         quietly eat a healthy conversation.
         """
+        if parse_output_token_cap(error_text) is not None:
+            return ""  # an output-token budget, not a message at all
         if any(m in (error_text or "").lower() for m in _CONTEXT_ERROR_MARKERS):
             return ""  # not a shape problem — the caller reports it as a size problem
 
@@ -4099,6 +4170,10 @@ class Kodiqa:
 
     def _report_unhealable_client_error(self):
         """A 400/422 we could not repair — tell the user what actually helps."""
+        if parse_output_token_cap(self._last_client_error) is not None:
+            self.console.print("  [dim]The provider rejected the output-token budget even after "
+                               "clamping it. Try another model.[/]")
+            return
         if any(m in (self._last_client_error or "").lower() for m in _CONTEXT_ERROR_MARKERS):
             self.console.print("  [yellow]The conversation is too long for this model.[/] "
                                "Use [bold]/compact[/] to summarize it, or [bold]/clear[/] to start fresh.")
@@ -4803,7 +4878,7 @@ class Kodiqa:
                     },
                     json={
                         "model": self.model,
-                        "max_tokens": 8192,
+                        "max_tokens": self._output_token_budget(),
                         "system": system_blocks,
                         "messages": messages,
                         "tools": cached_tools,
@@ -5386,10 +5461,11 @@ class Kodiqa:
         }
         # OpenAI reasoning (o-series: o1/o3/o4...) reject `max_tokens` and require
         # `max_completion_tokens`; using the wrong key returns a 400.
+        budget = self._output_token_budget()
         if provider == "openai" and re.match(r"^o\d", model):
-            body["max_completion_tokens"] = 8192
+            body["max_completion_tokens"] = budget
         else:
-            body["max_tokens"] = 8192
+            body["max_tokens"] = budget
         # stream_options not supported by all providers
         if provider not in ("groq",):
             body["stream_options"] = {"include_usage": True}

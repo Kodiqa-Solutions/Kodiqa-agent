@@ -4,6 +4,13 @@ All notable changes to Kodiqa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.21.2] - 2026-08-09
+
+**Providers that cap output tokens no longer dead-end.** Suite 817 → 826.
+
+### Fixed
+- **A provider that caps output tokens below the request is now handled instead of reported as unfixable.** Some providers (Groq, Cerebras, NVIDIA NIM and others) allow fewer output tokens than Kodiqa asks for and reject the whole request with a 400 that names their maximum. Kodiqa now reads that maximum, clamps the request, retries once, and remembers the cap for that model for the rest of the session. Previously the conversation-repair added in 3.21.0 mistook this for a malformed conversation — it could delete good turns chasing a problem that wasn't in the messages, then advise `/clear`, which would not have helped.
+
 ## [3.21.1] - 2026-08-09
 
 **Follow-up to 3.21.0.** Suite 805 → 817.

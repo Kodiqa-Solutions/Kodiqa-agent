@@ -41,6 +41,9 @@ class TestStreamFailover:
         k._build_openai_messages.return_value = []
         k._provider_label = Kodiqa._provider_label.__get__(k)
         k._attempt_stream = Kodiqa._attempt_stream.__get__(k)
+        k._output_caps = {}
+        k._output_token_budget = Kodiqa._output_token_budget.__get__(k)
+        k._learn_output_cap = Kodiqa._learn_output_cap.__get__(k)
         k._heal_history.return_value = ""  # nothing to repair in these scenarios
         return k
 
@@ -162,6 +165,9 @@ class TestStreamInterruptedInit:
         k._stream_interrupted = False  # the default __init__ now guarantees
         k._build_openai_messages.return_value = []
         k._attempt_stream = Kodiqa._attempt_stream.__get__(k)
+        k._output_caps = {}
+        k._output_token_budget = Kodiqa._output_token_budget.__get__(k)
+        k._learn_output_cap = Kodiqa._learn_output_cap.__get__(k)
         k._heal_history.return_value = ""
         k._call_openai_compat_stream.return_value = None  # 404 → None, no monitor started
         resp, kind, prov = Kodiqa._stream_native_with_failover(k, "openai", "qwen", "SYS")

@@ -364,6 +364,9 @@ def version_is_newer(latest, current):
 # ── Changelog ──
 # Canonical changelog is CHANGELOG.md — this list powers the /changelog command
 CHANGELOG = [
+    {"version": "v3.21.2", "date": "2026-08-09", "changes": [
+        "Fix: a provider that caps output tokens below the request (Groq, Cerebras, NVIDIA NIM, ...) is now handled — Kodiqa reads the maximum from the 400, clamps, retries once, and remembers it for that model. The conversation repair added in 3.21.0 previously mistook this for a malformed conversation and suggested /clear, which would not have helped.",
+    ]},
     {"version": "v3.21.1", "date": "2026-08-09", "changes": [
         "Fix: a tool call with malformed JSON arguments is no longer run with empty arguments — the model was told 'path is required' when the real problem was its own broken JSON, and usually looped fixing the wrong thing. It is now told the arguments were invalid and asked to resend.",
         "Fix: with native tool calling on, a local model that answers in the old [ACTION] text format now still acts instead of ending the turn with an explanation and no action.",
