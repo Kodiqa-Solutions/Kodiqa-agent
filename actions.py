@@ -601,6 +601,12 @@ def do_write_file(path, content):
 def do_edit_file(path, old_text, new_text):
     if not path or not path.strip():
         return "Error: file path is required — cannot edit an empty path."
+    if not old_text:
+        # "" is a substring of everything: str.replace("", new, 1) would silently
+        # prepend new_text instead of replacing anything. Use write_file to create
+        # or overwrite a file.
+        return ("Error: old_string cannot be empty — it must be the exact existing text to "
+                "replace. Use write_file to create or overwrite a file.")
     path = os.path.expanduser(path)
     if not os.path.isfile(path):
         return f"File not found: {path}"
@@ -702,6 +708,13 @@ def redo_paths():
 
 def do_edit_file_all(path, old_text, new_text):
     """Replace ALL occurrences of old_text with new_text in a file."""
+    if not path or not path.strip():
+        return "Error: file path is required — cannot edit an empty path."
+    if not old_text:
+        # "" matches between every character: str.replace("", new) would insert
+        # new_text between EVERY character and destroy the file.
+        return ("Error: old_string cannot be empty — it must be the exact existing text to "
+                "replace. Use write_file to create or overwrite a file.")
     path = os.path.expanduser(path)
     if not os.path.isfile(path):
         return f"File not found: {path}"

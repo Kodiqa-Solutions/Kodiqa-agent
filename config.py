@@ -364,6 +364,14 @@ def version_is_newer(latest, current):
 # ── Changelog ──
 # Canonical changelog is CHANGELOG.md — this list powers the /changelog command
 CHANGELOG = [
+    {"version": "v3.21.0", "date": "2026-08-09", "changes": [
+        "Local models can now use NATIVE tool calling instead of text [ACTION] blocks — the same structured tool protocol the cloud providers use. Turn it on with '/tune tools auto' (off by default); '/model' marks which local models support it.",
+        "Fix (lost work): a network drop in the MIDDLE of a streamed reply killed the whole turn with 'Something went wrong' — and failover never fired, because it only reacted to a clean failure. Dropped streams are now caught, so retry and failover actually happen.",
+        "New (resilience): a transient failure retries YOUR model once before switching provider, so a one-second blip no longer silently moves you to a different model. Works even with /failover off.",
+        "Fix (data loss): edit_file / search_replace_all with an empty old_string could destroy a file — an empty match inserts the replacement between every character. Both now reject it.",
+        "New (recovery): when a provider rejects the conversation with a 400, Kodiqa repairs the message history and retries instead of leaving the session poisoned until /clear. A too-long conversation now points you at /compact.",
+        "Local thinking models (qwen3, gpt-oss) show their reasoning again — Ollama streams it in a structured field that was being dropped.",
+    ]},
     {"version": "v3.20.1", "date": "2026-07-02", "changes": [
         "Stability audit release — a second 4-agent audit + full feature-by-feature verification (tests 710 -> 729).",
         "Fix (data loss): writing into a pre-existing EMPTY file no longer makes /undo or /rewind delete it (a None-vs-empty sentinel collision destroyed the file).",

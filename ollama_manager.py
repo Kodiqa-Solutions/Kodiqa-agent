@@ -29,6 +29,47 @@ _logger = logging.getLogger("kodiqa")
 class OllamaManager:
     def __init__(self, agent):
         self.agent = agent
+        self._caps_cache = {}  # model name -> capability list (successful lookups only)
+
+    # ── Model capabilities (native tool calling, vision, thinking) ──
+
+    def model_capabilities(self, name):
+        """Return Ollama's capability list for a model, e.g. ["completion", "tools"].
+
+        Returns None when unknown — an Ollama too old to report `capabilities`, a
+        model that isn't installed, or a server that isn't up. Callers must treat
+        None as "don't assume anything", not as "unsupported". Only successful
+        lookups are cached, so a later server start still resolves.
+        """
+        if not name:
+            return None
+        if name in self._caps_cache:
+            return self._caps_cache[name]
+        try:
+            resp = requests.post(f"{OLLAMA_URL}/api/show", json={"model": name}, timeout=5)
+            resp.raise_for_status()
+            caps = resp.json().get("capabilities")
+        except Exception:
+            _logger.debug("ignored error in model_capabilities", exc_info=True)
+            return None
+        if not isinstance(caps, list):
+            return None
+        caps = [c for c in caps if isinstance(c, str)]
+        self._caps_cache[name] = caps
+        return caps
+
+    def supports_tools(self, name):
+        """Whether the model reports native tool-calling support. Unknown → False
+        (keep the text-ACTION path rather than guessing)."""
+        caps = self.model_capabilities(name)
+        return bool(caps) and "tools" in caps
+
+    def invalidate_capabilities(self, name=None):
+        """Drop cached capabilities (one model, or all) after a pull/delete."""
+        if name is None:
+            self._caps_cache.clear()
+        else:
+            self._caps_cache.pop(name, None)
 
     def ensure_ollama(self):
         """Make sure Ollama is running, start it if not.
@@ -1000,6 +1041,7 @@ class OllamaManager:
                 continue
             if ok:
                 self.agent._invalidate_model_cache()
+                self.invalidate_capabilities(target)
             if cancelled:
                 break
 
@@ -1143,6 +1185,7 @@ class OllamaManager:
                 if result.returncode == 0:
                     self.agent.console.print(f"  [green]●[/] Deleted [cyan]{name}[/]")
                     self.agent._invalidate_model_cache()
+                    self.invalidate_capabilities(name)
                     if name == self.agent.model:
                         self.agent.console.print(f"  [yellow]Note: {name} was the active model. Use /model to switch.[/]")
                 else:

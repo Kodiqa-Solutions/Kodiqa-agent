@@ -2,6 +2,7 @@
 """Kodiqa - Local AI coding agent. Claude native tools + Ollama text-based actions."""
 
 import difflib
+import http.client
 import json
 import os
 import sys
@@ -92,6 +93,46 @@ def _setup_error_log():
     logger.setLevel(logging.DEBUG if os.environ.get("KODIQA_DEBUG") else logging.WARNING)
     _logger = logger
     return logger
+
+
+# A stream can die AFTER the response headers: the upstream drops the connection, a
+# proxy cuts a long response, WiFi blips. requests.RequestException covers
+# ChunkedEncodingError/ConnectionError/Timeout; OSError and http.client.HTTPException
+# catch the raw socket/protocol errors that can surface from iter_lines().
+_STREAM_DROP_ERRORS = (requests.RequestException, http.client.HTTPException, OSError)
+
+# A 400 whose text matches these is a size problem (fix with /compact), not a broken
+# message shape — healing the history would delete good turns for nothing.
+_CONTEXT_ERROR_MARKERS = (
+    "context length", "maximum context", "context_length_exceeded",
+    "too long", "reduce the length", "exceeds the maximum",
+)
+
+
+def _parse_ollama_tool_call(call, index):
+    """Normalize one Ollama streamed tool call to {"id","name","input"}.
+
+    Ollama sends `arguments` as an OBJECT, but some models/versions emit the
+    OpenAI-style JSON string — accept both. Ollama has no call ids, so we
+    synthesize stable per-turn ones. Returns None for an unusable call."""
+    if not isinstance(call, dict):
+        return None
+    fn = call.get("function")
+    if not isinstance(fn, dict):
+        return None
+    name = fn.get("name")
+    if not isinstance(name, str) or not name:
+        return None
+    args = fn.get("arguments")
+    if isinstance(args, str):
+        try:
+            args = json.loads(args) if args.strip() else {}
+        except (ValueError, TypeError):
+            _logger.debug("unparsable ollama tool arguments for %s", name, exc_info=True)
+            args = {}
+    if not isinstance(args, dict):
+        args = {}
+    return {"id": call.get("id") or f"call_{index}", "name": name, "input": args}
 
 
 def _retry_api_call(fn, max_retries=3, backoff_base=2.0, provider_name="API"):
@@ -394,7 +435,7 @@ _KEYWORD_ARGS = {
     "/approve": ("write", "command", "delete", "clipboard", "on", "off"),
     "/effort": ("off", "low", "medium", "high"),
     "/failover": ("on", "off", "auto"),
-    "/tune": ("ctx", "kv", "flash", "gpu", "reset"),
+    "/tune": ("ctx", "kv", "flash", "gpu", "tools", "reset"),
     "/toon": ("on", "off"),
     "/sandbox": ("on", "off"),
     "/lint": ("off",),
@@ -574,6 +615,8 @@ class Kodiqa:
         self._ollama_started_by_us = False  # track if we started Ollama
         self._stream_interrupted = False  # set True when Esc/Ctrl+C aborts a stream; init'd here so an early request failure (before _start_stream_interrupt) never AttributeErrors in failover
         self._stream_no_failover = False  # set True on a client request error (400/422) so failover does NOT cascade to other providers — a malformed request fails identically everywhere
+        self._tools_ctx_warned = False  # one num_ctx warning per session when native Ollama tools are on
+        self._last_client_error = ""  # 400/422 detail text, so _heal_history can classify it
         # Setup prompt_toolkit for Claude Code-style UI
         self._history_file = os.path.join(KODIQA_DIR, "input_history")
         self._pt_style = PTStyle.from_dict({
@@ -1519,6 +1562,67 @@ class Kodiqa:
     def _fetch_ollama_library(self, installed):
         return self.ollama.fetch_ollama_library(installed)
 
+    def _ollama_supports_tools(self, name=None):
+        """Whether a local model reports native tool-calling support (Ollama
+        `capabilities`). Unknown/unreachable → False."""
+        return self.ollama.supports_tools(name or self.model)
+
+    def _tool_schema_tokens(self):
+        """Rough token cost of the tool schemas sent on every native-tools request."""
+        try:
+            return len(json.dumps(self._get_openai_tools())) // 4
+        except Exception:
+            _logger.debug("ignored error sizing tool schemas", exc_info=True)
+            return 0
+
+    def _warn_tools_context(self, once=False):
+        """Native tool calling sends every tool schema on every request. Ollama's
+        default context is small (often 4096), so without a bigger num_ctx the model
+        silently loses tools and looks broken. Warn with real numbers."""
+        if once and getattr(self, "_tools_ctx_warned", False):
+            return
+        schema_tokens = self._tool_schema_tokens()
+        if not schema_tokens:
+            return
+        # Headroom for the system prompt AND real work: reading one 500-line file is
+        # already ~6k tokens, so schemas + a few kB of slack is not enough.
+        needed = schema_tokens + 12000
+        num_ctx = self.settings.get("ollama_num_ctx")
+        suggest = max(16384, ((needed // 4096) + 1) * 4096)
+        if not num_ctx:
+            self._tools_ctx_warned = True
+            self.console.print(
+                f"  [yellow]⚠[/] Tool schemas are ~{schema_tokens} tokens and num_ctx is "
+                f"[dim]model default[/] (often 4096). Set it: [bold]/tune ctx {suggest}[/]")
+        elif int(num_ctx) < needed:
+            self._tools_ctx_warned = True
+            self.console.print(
+                f"  [yellow]⚠[/] num_ctx={num_ctx} is tight for native tools "
+                f"(~{schema_tokens} tokens of schemas). Try [bold]/tune ctx {suggest}[/]")
+
+    def _local_model_badge(self, name):
+        """Picker badge for a local model: tool-capable, text-only, or nothing when
+        Ollama doesn't report capabilities (older server → stay quiet, don't guess)."""
+        caps = self.ollama.model_capabilities(name)
+        if caps is None:
+            return ""
+        return " [green]🔧 tools[/]" if "tools" in caps else " [dim]📝 text-only[/]"
+
+    def _ollama_tools_mode(self):
+        """'off' (text-ACTION only), 'auto' (native when the model supports it), or
+        'on' (force native). Persisted via /tune tools."""
+        mode = str(self.settings.get("ollama_native_tools", "off") or "off").lower()
+        return mode if mode in ("off", "auto", "on") else "off"
+
+    def _ollama_native_tools_active(self):
+        """Whether THIS turn should use Ollama's native tool calling."""
+        mode = self._ollama_tools_mode()
+        if mode == "off":
+            return False
+        if mode == "on":
+            return True
+        return self._ollama_supports_tools()
+
     def _cleanup_children(self):
         """Stop spawned child processes (MCP, LSP, Ollama). Safe to call repeatedly;
         registered with atexit so children aren't orphaned on crash/exit."""
@@ -1764,12 +1868,17 @@ class Kodiqa:
                 alias_for = {}
                 for a, full in MODEL_ALIASES.items():
                     alias_for.setdefault(_norm(full), a)
+                any_tools = False
                 for name, size_str in installed_local:
                     choices.append((name, name, "local"))
                     a = alias_for.get(_norm(name))
                     alias_hint = f" [dim](/{a})[/]" if a else ""
                     marker = " [cyan]◀[/]" if _norm(name) == _norm(self.model) else ""
-                    self.console.print(f"  {len(choices)}. [cyan]{name}[/] [dim]({size_str})[/]{alias_hint}{marker}")
+                    badge = self._local_model_badge(name)
+                    any_tools = any_tools or "tools" in badge
+                    self.console.print(f"  {len(choices)}. [cyan]{name}[/] [dim]({size_str})[/]{badge}{alias_hint}{marker}")
+                if any_tools and self._ollama_tools_mode() == "off":
+                    self.console.print("  [dim]🔧 = native tool calling available — enable with [/][bold]/tune tools auto[/]")
             extras = self._get_api_model_choices()
             if self.claude_key:
                 self.console.print("[bold yellow]Claude API:[/]")
@@ -1966,12 +2075,18 @@ class Kodiqa:
             self.console.print(f"  num_ctx        : {self.settings.get('ollama_num_ctx') or '[dim]model default[/]'}")
             ng = self.settings.get('ollama_num_gpu')
             self.console.print(f"  num_gpu        : {ng if ng is not None else '[dim]auto[/]'} [dim](-1 = all layers on GPU)[/]")
-            self.console.print("[dim]Set:[/] /tune ctx 8192 [dim]|[/] /tune kv q8_0|q4_0|f16 [dim]|[/] /tune flash on|off [dim]|[/] /tune gpu -1 [dim]|[/] /tune reset")
-            self.console.print("[dim]kv/flash apply on the next Ollama start; ctx/gpu on the next message.[/]")
+            mode = self._ollama_tools_mode()
+            mode_note = {"off": "text-ACTION blocks (classic)",
+                         "auto": "native when the model reports it",
+                         "on": "native, forced"}[mode]
+            self.console.print(f"  tools          : {mode} [dim]({mode_note})[/]")
+            self.console.print("[dim]Set:[/] /tune ctx 8192 [dim]|[/] /tune kv q8_0|q4_0|f16 [dim]|[/] /tune flash on|off [dim]|[/] /tune gpu -1 [dim]|[/] /tune tools off|auto|on [dim]|[/] /tune reset")
+            self.console.print("[dim]kv/flash apply on the next Ollama start; ctx/gpu/tools on the next message.[/]")
             return
         key, val = parts[0].lower(), (parts[1] if len(parts) > 1 else "")
         if key == "reset":
-            for k in ("flash_attention", "kv_cache_type", "ollama_num_ctx", "ollama_num_gpu"):
+            for k in ("flash_attention", "kv_cache_type", "ollama_num_ctx",
+                      "ollama_num_gpu", "ollama_native_tools"):
                 self.settings.pop(k, None)
             save_settings(self.settings)
             self.console.print("[green]Tuning reset to defaults.[/]")
@@ -1993,8 +2108,17 @@ class Kodiqa:
                 self.settings["ollama_num_gpu"] = int(val)
             except ValueError:
                 self.console.print("[yellow]Usage: /tune gpu <n|-1>[/]"); return
+        elif key == "tools":
+            if val.lower() not in ("off", "auto", "on"):
+                self.console.print("[yellow]Usage: /tune tools off|auto|on[/] [dim](off = classic [ACTION] blocks)[/]"); return
+            self.settings["ollama_native_tools"] = val.lower()
+            save_settings(self.settings)
+            self.console.print(f"[green]Set tools = {val.lower()}[/]")
+            if val.lower() != "off":
+                self._warn_tools_context()
+            return
         else:
-            self.console.print(f"[yellow]Unknown option '{key}'. Use ctx|kv|flash|gpu|reset.[/]"); return
+            self.console.print(f"[yellow]Unknown option '{key}'. Use ctx|kv|flash|gpu|tools|reset.[/]"); return
         save_settings(self.settings)
         self.console.print(f"[green]Set {key} = {val}[/] [dim](kv/flash take effect on next Ollama start)[/]")
 
@@ -3804,7 +3928,14 @@ class Kodiqa:
         rebuilding messages in its format. Returns (response, kind, provider) for
         whichever provider answered, so the caller stays in sync."""
         self._stream_no_failover = False
-        attempts = [(kind, provider, self.model)]
+        self._last_client_error = ""
+        healed_once = False
+        # Retry the user's OWN model once before switching provider: a dropped stream
+        # or a 5xx is usually transient, and silently moving someone off the model they
+        # picked is worse than a one-second retry. Not gated on failover_enabled —
+        # retrying your own choice is not a failover. A 400/422 or a user interrupt
+        # breaks out below before this second attempt runs.
+        attempts = [(kind, provider, self.model), (kind, provider, self.model)]
         if self.failover_enabled:
             current = "claude" if kind == "claude" else provider
             tried = {current}
@@ -3814,24 +3945,147 @@ class Kodiqa:
                     attempts.append((k, p, m))
                     tried.add(pid)
         for idx, (k, p, model) in enumerate(attempts):
-            if idx > 0:  # this is a failover attempt
+            if idx == 1:  # same model, second try
+                self.console.print(f"  [yellow]↻ Retrying[/] [cyan]{model}[/]…")
+            elif idx > 1:  # this is a failover attempt
                 self.model = model
                 self.console.print(
                     f"  [yellow]⚠ Failing over to[/] [cyan]{model}[/] "
                     f"[dim]({self._provider_label(k, p)})[/]…")
-            if k == "claude":
-                response = self._call_claude_stream(system_prompt, self._build_claude_messages())
-            else:
-                response = self._call_openai_compat_stream(self._build_openai_messages(system_prompt), p)
+            response = self._attempt_stream(k, p, system_prompt)
+            # A 400/422 usually means a malformed message shape that is now STUCK in
+            # history: every later turn re-sends it and 400s too, so the session is
+            # dead until /clear. Heal the history once and retry before giving up.
+            if (response is None and self._stream_no_failover
+                    and not self._stream_interrupted and not healed_once):
+                note = self._heal_history(self._last_client_error)
+                if note:
+                    healed_once = True
+                    self._stream_no_failover = False
+                    self.console.print(f"  [yellow]⚕ Repaired the conversation[/] [dim]({note})[/] — retrying…")
+                    response = self._attempt_stream(k, p, system_prompt)
             if response is not None:
                 return response, k, p
             if self._stream_interrupted:
                 return None, k, p  # user aborted — never fail over
             if self._stream_no_failover:
+                self._report_unhealable_client_error()
                 return None, k, p  # malformed request (400/422) — would fail identically on every provider
         if len(attempts) > 1:
             self.console.print("[red]All configured providers failed.[/]")
         return None, kind, provider
+
+    def _attempt_stream(self, kind, provider, system_prompt):
+        """One stream attempt in the active provider's format."""
+        if kind == "claude":
+            return self._call_claude_stream(system_prompt, self._build_claude_messages())
+        return self._call_openai_compat_stream(self._build_openai_messages(system_prompt), provider)
+
+    def _heal_history(self, error_text=""):
+        """Remove the message shapes that make a provider 400 and then keep 400-ing
+        every later turn. Returns a short description of what was removed, or "".
+
+        This edits `self.history` itself, which is the point: the per-provider
+        builders sanitize what they SEND, so a bad entry survives in history and
+        re-poisons the next turn (or the next provider after a switch). That is the
+        failure class that has needed a reactive fix in every release since v3.18.x —
+        a dead session recoverable only by /clear.
+
+        Only called AFTER a real 400/422, and only once per turn, so it can never
+        quietly eat a healthy conversation.
+        """
+        if any(m in (error_text or "").lower() for m in _CONTEXT_ERROR_MARKERS):
+            return ""  # not a shape problem — the caller reports it as a size problem
+
+        removed = {"empty assistant turn": 0, "orphan tool result": 0,
+                   "unanswered tool call": 0}
+        cleaned = []
+        open_tool_ids = set()
+        open_is_claude = False  # whether the open ids came from Claude tool_use blocks
+
+        def close_open_tool_calls():
+            """Every declared tool_call must have a response — verified live: DeepSeek
+            400s on 'insufficient tool messages following tool_calls'. Mirrors the
+            backfill the payload builders already do, but on the stored history."""
+            for tid in sorted(open_tool_ids):
+                if open_is_claude:
+                    cleaned.append({"role": "user", "content": [
+                        {"type": "tool_result", "tool_use_id": tid,
+                         "content": "[no result returned]"}]})
+                else:
+                    cleaned.append({"role": "tool", "tool_call_id": tid,
+                                    "content": "[no result returned]"})
+                removed["unanswered tool call"] += 1
+            open_tool_ids.clear()
+
+        for msg in self.history:
+            role = msg.get("role")
+            content = msg.get("content")
+
+            if role == "assistant":
+                close_open_tool_calls()  # a new assistant turn closes the prior one
+                blocks = content if isinstance(content, list) else []
+                has_text = bool(content.strip()) if isinstance(content, str) else any(
+                    b.get("type") == "text" and b.get("text")
+                    for b in blocks if isinstance(b, dict))
+                ids = [b.get("id") for b in blocks
+                       if isinstance(b, dict) and b.get("type") == "tool_use"]
+                ids += [tc.get("id") for tc in (msg.get("tool_calls") or [])]
+                if not has_text and not ids:
+                    # Content-less, tool-less assistant turn: OpenAI-compat APIs reject it.
+                    removed["empty assistant turn"] += 1
+                    continue
+                open_tool_ids.update(i for i in ids if i)
+                open_is_claude = bool(blocks)
+                cleaned.append(msg)
+                continue
+
+            if role == "tool":
+                tid = msg.get("tool_call_id")
+                # Ollama-native results are positional and carry no id — always keep.
+                if tid is not None and tid not in open_tool_ids:
+                    removed["orphan tool result"] += 1
+                    continue
+                open_tool_ids.discard(tid)
+                cleaned.append(msg)
+                continue
+
+            if role == "user" and isinstance(content, list) and any(
+                    isinstance(b, dict) and b.get("type") == "tool_result" for b in content):
+                kept = []
+                for b in content:
+                    if isinstance(b, dict) and b.get("type") == "tool_result":
+                        if b.get("tool_use_id") not in open_tool_ids:
+                            removed["orphan tool result"] += 1
+                            continue
+                        open_tool_ids.discard(b.get("tool_use_id"))
+                    kept.append(b)
+                if not kept:
+                    continue
+                cleaned.append(dict(msg, content=kept))
+                continue
+
+            if role == "user":
+                close_open_tool_calls()  # a plain user turn also closes the prior one
+            cleaned.append(msg)
+
+        close_open_tool_calls()  # nothing may be left dangling at the end
+        parts = [f"{n} {label}{'s' if n > 1 else ''}" for label, n in removed.items() if n]
+        if not parts:
+            return ""
+        self.history[:] = cleaned
+        self._last_context_tokens = 0  # the estimate is stale once history shrinks
+        _logger.warning("healed history after client error: %s", ", ".join(parts))
+        return ", ".join(parts)
+
+    def _report_unhealable_client_error(self):
+        """A 400/422 we could not repair — tell the user what actually helps."""
+        if any(m in (self._last_client_error or "").lower() for m in _CONTEXT_ERROR_MARKERS):
+            self.console.print("  [yellow]The conversation is too long for this model.[/] "
+                               "Use [bold]/compact[/] to summarize it, or [bold]/clear[/] to start fresh.")
+        else:
+            self.console.print("  [dim]Could not repair the conversation automatically. "
+                               "If this repeats, [/][bold]/clear[/][dim] resets it.[/]")
 
     def _model_supports_vision(self):
         """Whether the active model can accept image input. Conservative: only
@@ -3953,6 +4207,16 @@ class Kodiqa:
                     "input": tc["input"],
                 })
             return {"role": "assistant", "content": assistant_content}
+        if kind == "ollama":
+            # Ollama's own shape: no call ids, and `arguments` is an OBJECT (not the
+            # JSON string OpenAI uses) — its server rejects a string there.
+            msg = {"role": "assistant", "content": text_content or ""}
+            if tool_calls:
+                msg["tool_calls"] = [
+                    {"function": {"name": tc["name"], "arguments": tc.get("input", {})}}
+                    for tc in tool_calls
+                ]
+            return msg
         # openai-compatible
         msg = {"role": "assistant", "content": text_content or None}
         if tool_calls:
@@ -3992,6 +4256,22 @@ class Kodiqa:
         st = Status(label, console=self.console, spinner="dots")
         self._live_status = st
         return st
+
+    def _stream_dropped(self, exc, provider_label, *, partial):
+        """Handle a stream that died mid-response. Returns None so the caller's
+        failover/retry path engages.
+
+        These exceptions used to escape the streaming loop entirely: they were raised
+        past _stream_native_with_failover (which only reacts to a None return), out of
+        the chat loop, and were caught by run()'s catch-all — so a WiFi blip lost the
+        whole turn and failover never fired for the case it exists for."""
+        _logger.warning("%s stream dropped mid-response: %s", provider_label, exc, exc_info=True)
+        when = "after partial output" if partial else "before any output"
+        self.console.print(f"\n[yellow]⚠ {provider_label} stream dropped {when}[/] "
+                           f"[dim]({type(exc).__name__})[/]")
+        if partial:
+            self.console.print("[dim]The partial response was discarded — retrying.[/]")
+        return None
 
     def _run_tool_calls(self, tool_calls):
         """Execute a turn's tool calls (MCP + meta + regular, parallel/single), review
@@ -4077,8 +4357,19 @@ class Kodiqa:
         lint_errors = self._run_lint_if_enabled()
         return results_list, lint_errors, review_note
 
-    def _append_tool_results(self, kind, results_list):
-        """Append a turn's tool results to history in the provider's native format."""
+    def _append_tool_results(self, kind, results_list, tool_calls=None):
+        """Append a turn's tool results to history in the provider's native format.
+
+        `tool_calls` is only used by the Ollama kind, which has no call ids and
+        labels each result with `tool_name` instead."""
+        if kind == "ollama":
+            names = {tc["id"]: tc["name"] for tc in (tool_calls or [])}
+            for tc_id, result in results_list:
+                entry = {"role": "tool", "content": result}
+                if names.get(tc_id):
+                    entry["tool_name"] = names[tc_id]
+                self.history.append(entry)
+            return
         if kind == "claude":
             tool_results = []
             for tc_id, result in results_list:
@@ -4111,13 +4402,19 @@ class Kodiqa:
 
     # ── Ollama chat (text-based actions) ──
 
-    def _build_ollama_messages(self, system_prompt):
+    def _build_ollama_messages(self, system_prompt, native=False):
         """Flatten history to plain {role, content:str} messages for Ollama's
         /api/chat. Turns that ran on Claude/OpenAI leave content-block assistant
         messages and role:'tool' entries that Ollama can't parse — coerce everything
         to text (and fold tool results into user notes) so switching to a local model
         mid-conversation doesn't garble or error. Preserves the `images` field on
-        user turns (Ollama vision)."""
+        user turns (Ollama vision).
+
+        With native=True (native tool calling) Ollama-shaped turns are passed
+        through intact — an assistant message keeps its `tool_calls`, and a
+        `role:'tool'` result stays a tool message instead of becoming a user note.
+        Foreign (Claude/OpenAI) turns still get flattened, so switching providers
+        mid-conversation behaves exactly as before."""
         msgs = [{"role": "system", "content": system_prompt}]
         for m in self.history:
             role = m.get("role")
@@ -4125,6 +4422,24 @@ class Kodiqa:
                 continue
             content = m.get("content")
             images = m.get("images")
+            if native:
+                # Ollama-native assistant turn: keep the structured tool calls.
+                if role == "assistant" and m.get("tool_calls") and isinstance(content, str):
+                    # Only OUR shape: `arguments` is an object. An OpenAI-format turn
+                    # (arguments = JSON string) falls through to the flatten path.
+                    calls = [c for c in m["tool_calls"]
+                             if isinstance(c.get("function"), dict)
+                             and isinstance(c["function"].get("arguments"), dict)]
+                    if calls:
+                        msgs.append({"role": "assistant", "content": content, "tool_calls": calls})
+                        continue
+                # Ollama-native tool result: keep it as a tool message.
+                if role == "tool" and isinstance(content, str) and "tool_call_id" not in m:
+                    entry = {"role": "tool", "content": content}
+                    if m.get("tool_name"):
+                        entry["tool_name"] = m["tool_name"]
+                    msgs.append(entry)
+                    continue
             if isinstance(content, str):
                 text = content
             elif isinstance(content, list):
@@ -4185,6 +4500,11 @@ class Kodiqa:
             self.history.append({"role": "user", "content": msg_text})
         self._pending_files = []
         self._pending_images = []
+        # Native tool calling (Ollama `tools`) when the model supports it and the user
+        # opted in via /tune tools. Otherwise the classic text-[ACTION] protocol below.
+        native = self._ollama_native_tools_active()
+        if native:
+            self._warn_tools_context(once=True)
         _iteration = 0
         _max_iter = self.config.get("max_iterations", 40)
         while True:
@@ -4192,6 +4512,10 @@ class Kodiqa:
             if _iteration > _max_iter:
                 self.console.print(f"[yellow]Reached max iterations ({_max_iter}). Stopping — raise max_iterations in /config if needed.[/]")
                 break
+            if native:
+                if self._run_ollama_native_turn():
+                    continue
+                return
             system_prompt = self._build_system_prompt(SYSTEM_PROMPT)
             messages = self._build_ollama_messages(system_prompt)
 
@@ -4242,6 +4566,40 @@ class Kodiqa:
             self.history.append({"role": "user", "content": f"[Action Results]\n" + "\n\n".join(results)})
             if self._maybe_lint_fix(lint_errors):
                 continue
+
+    def _run_ollama_native_turn(self):
+        """One iteration of the Ollama loop using native tool calling.
+
+        Returns True when the loop should run again (the model called tools), False
+        when the turn is finished or failed. Mirrors _run_native_chat's body; the
+        system prompt is the native-tools one (CLAUDE_SYSTEM), not the [ACTION] one."""
+        system_prompt = self._build_system_prompt(CLAUDE_SYSTEM)
+        messages = self._build_ollama_messages(system_prompt, native=True)
+        response = self._stream_ollama(messages, tools=self._get_openai_tools())
+        if response is None:
+            return False
+        text_content = response.get("text", "")
+        tool_calls = response.get("tool_calls", [])
+        if self._stream_interrupted:
+            if text_content:
+                self.history.append(self._assistant_msg("ollama", text_content, []))
+            self._save_session()
+            return False
+        if not text_content and not tool_calls:
+            self.console.print("[dim](no response)[/]")
+            self._save_session()
+            return False
+        self.history.append(self._assistant_msg("ollama", text_content, tool_calls))
+        if not tool_calls:
+            self._save_session()
+            return False
+        results_list, lint_errors, review_note = self._run_tool_calls(tool_calls)
+        self._append_tool_results("ollama", results_list, tool_calls)
+        if review_note:
+            self.history.append({"role": "user", "content": review_note})
+        self._save_session()
+        self._maybe_lint_fix(lint_errors)
+        return True
 
     # ── Claude chat (native tool_use API) ──
 
@@ -4422,6 +4780,7 @@ class Kodiqa:
                 # it through failover. Mirrors the OpenAI-compat path.
                 if resp.status_code in (400, 422):
                     self._stream_no_failover = True
+                    self._last_client_error = resp.text[:500]
                 return None
         except Exception as e:
             if _logger:
@@ -4441,6 +4800,7 @@ class Kodiqa:
         stop_reason = "end_turn"
         stream_usage = {}
         first_token = True
+        stream_drop = None
         writer = StreamWriter(self.console, compact=self.compact_mode, out_rate=self._output_rate())
         stall = StreamStallIndicator(self.console)
         thinking_status = Status("  [dim]Thinking...[/]", console=self.console, spinner="dots")
@@ -4521,11 +4881,18 @@ class Kodiqa:
 
         except KeyboardInterrupt:
             self._stream_interrupted = True
+        except _STREAM_DROP_ERRORS as e:
+            stream_drop = e
         finally:
             cleanup()
             stall.stop()
             resp.close()  # release the pooled connection even on mid-stream error
 
+        if stream_drop is not None:
+            if first_token:
+                thinking_status.stop()
+            writer.flush_pending()
+            return self._stream_dropped(stream_drop, "Claude", partial=not first_token)
         if self._stream_interrupted:
             thinking_status.stop()
             writer.flush_pending()
@@ -5038,9 +5405,12 @@ class Kodiqa:
                 self.console.print(f"[dim]Model: {self.model} | Endpoint: {prov['url']}[/]")
                 # A 400/422 is a malformed-request error (bad message structure,
                 # unsupported param) — it would fail identically on every other
-                # provider, so suppress failover and surface it here instead.
+                # provider, so suppress failover and surface it here instead. The
+                # detail text lets the caller tell a bad SHAPE (healable) from a
+                # too-long conversation (needs /compact).
                 if resp.status_code in (400, 422):
                     self._stream_no_failover = True
+                    self._last_client_error = detail or ""
                 return None
         except Exception as e:
             if _logger:
@@ -5057,6 +5427,7 @@ class Kodiqa:
         tool_calls = {}  # index -> {id, name, arguments}
         stream_usage = {}
         first_token = True
+        stream_drop = None
         reasoning_chars = 0  # reasoning models stream chain-of-thought in reasoning_content
         writer = StreamWriter(self.console, compact=self.compact_mode, out_rate=self._output_rate())
         stall = StreamStallIndicator(self.console)
@@ -5135,11 +5506,18 @@ class Kodiqa:
 
         except KeyboardInterrupt:
             self._stream_interrupted = True
+        except _STREAM_DROP_ERRORS as e:
+            stream_drop = e
         finally:
             stall.stop()
             cleanup()
             resp.close()  # release the pooled connection even on mid-stream error
 
+        if stream_drop is not None:
+            if first_token:
+                thinking_status.stop()
+            writer.flush_pending()
+            return self._stream_dropped(stream_drop, prov["label"], partial=not first_token)
         if self._stream_interrupted:
             thinking_status.stop()
             writer.flush_pending()
@@ -5298,9 +5676,17 @@ class Kodiqa:
 
     # ── Ollama streaming ──
 
-    def _stream_ollama(self, messages):
+    def _stream_ollama(self, messages, tools=None):
+        """Stream one Ollama turn.
+
+        Without `tools` (the classic path) this returns the assistant TEXT, which the
+        caller parses for [ACTION] blocks — unchanged. With `tools` it returns
+        {"text": str, "tool_calls": [...]} using Ollama's native tool calling.
+        Returns None on a hard failure in both modes."""
         try:
             body = {"model": self.model, "messages": messages, "stream": True}
+            if tools:
+                body["tools"] = tools
             opts = self._ollama_options()
             if opts:
                 body["options"] = opts
@@ -5328,8 +5714,11 @@ class Kodiqa:
         self.console.print()
         stream_start = time.time()
         full_text = []
+        tool_calls = []
         first_token = True
         token_count = 0
+        stream_drop = None
+        thinking_chars = 0  # Ollama thinking models stream reasoning in a `thinking` field
         writer = StreamWriter(self.console, compact=self.compact_mode, out_rate=self._output_rate())
         stall = StreamStallIndicator(self.console)
         thinking_status = Status("  [dim]Thinking...[/]", console=self.console, spinner="dots")
@@ -5347,12 +5736,33 @@ class Kodiqa:
                 except json.JSONDecodeError:
                     continue
                 stall.ping()
+                msg = chunk.get("message") or {}
+                # Read tool calls BEFORE the done check — some Ollama versions attach
+                # them to the final chunk, and breaking first would drop the whole turn.
+                if tools is not None:
+                    for call in (msg.get("tool_calls") or []):
+                        parsed = _parse_ollama_tool_call(call, len(tool_calls))
+                        if parsed:
+                            if first_token:
+                                thinking_status.stop()
+                                first_token = False
+                            tool_calls.append(parsed)
+                # Ollama thinking models (qwen3, gpt-oss, …) stream chain-of-thought in
+                # a structured `thinking` field — not <think> tags, so StreamWriter's
+                # tag handling never sees it. Mirror the OpenAI-compat reasoning_content
+                # behavior: live count, don't print it, don't flip first_token.
+                thinking_chunk = msg.get("thinking")
+                if thinking_chunk:
+                    thinking_chars += len(thinking_chunk)
+                    thinking_status.update(f"  [dim]Thinking... (~{thinking_chars // 4:,} tokens)[/]")
                 if chunk.get("done"):
                     break
-                token = chunk.get("message", {}).get("content", "")
+                token = msg.get("content", "")
                 if token:
                     if first_token:
                         thinking_status.stop()
+                        if thinking_chars:
+                            self.console.print(f"  [dim cyan]╰─ reasoning: ~{thinking_chars // 4:,} tokens[/]")
                         self.console.print("[bold green]Kodiqa[/] ", end="")
                         first_token = False
                     full_text.append(token)
@@ -5360,10 +5770,17 @@ class Kodiqa:
                     writer.write(token)
         except KeyboardInterrupt:
             self._stream_interrupted = True
+        except _STREAM_DROP_ERRORS as e:
+            stream_drop = e
         finally:
             stall.stop()
             cleanup()
             resp.close()  # release the pooled connection even on mid-stream error
+        if stream_drop is not None:
+            if first_token:
+                thinking_status.stop()
+            writer.flush_pending()
+            return self._stream_dropped(stream_drop, "Ollama", partial=not first_token)
         if self._stream_interrupted:
             thinking_status.stop()
             writer.flush_pending()
@@ -5376,6 +5793,8 @@ class Kodiqa:
         if token_count > 0:
             tps = token_count / elapsed if elapsed > 0 else 0
             self.console.print(f"  [dim]{token_count} tokens | {tps:.1f} tok/s | {elapsed:.1f}s[/]")
+        if tools is not None:
+            return {"text": "".join(full_text), "tool_calls": tool_calls}
         return "".join(full_text)
 
     # ── Shared ──

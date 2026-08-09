@@ -4,6 +4,21 @@ All notable changes to Kodiqa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.21.0] - 2026-08-09
+
+**Local models get real tool calling, and streams stop losing your work.** Two features and four fixes; suite 731 → 805.
+
+### Added
+- **Native tool calling for local Ollama models.** Local models used the text `[ACTION: name]…[/ACTION]` protocol — a format the model had to reproduce exactly, where one malformed tag lost the turn — while every cloud provider got structured tool calls. Local models can now use the same structured protocol. Enable with `/tune tools auto` (off by default; `on` forces it, `off` keeps the classic path). Verified end-to-end against Ollama 0.16.3.
+- **`/model` shows which local models support tools.** Installed models are marked 🔧 `tools` or 📝 `text-only` from Ollama's reported capabilities, so the picker no longer presents two very different engines as one flat list. Nothing is shown when Ollama is too old to report capabilities.
+- **Retry your own model before failing over.** A transient failure now retries the model you chose once, and only then switches provider — a one-second blip no longer silently moves you to a different model. Applies even with `/failover off`, since retrying your own choice is not a failover.
+- **Automatic conversation repair after a 400.** When a provider rejects the conversation as malformed, Kodiqa repairs the stored history (drops content-less assistant turns and orphan tool results, backfills unanswered tool calls) and retries once, instead of leaving a session that fails on every later turn until `/clear`. A conversation rejected for *length* is not touched — it points you at `/compact` instead.
+
+### Fixed
+- **A dropped stream no longer loses the whole turn.** All three streaming loops caught only `Ctrl+C`, so a network drop *mid-reply* (flaky Wi-Fi, a proxy cutting a long response) escaped as an unhandled error and ended the turn with "Something went wrong". Worse, failover never fired for it: failover only reacts to a clean failure, so it was inert in exactly the case it exists for. Dropped streams are now caught, so retry and failover actually happen, and a partial answer is discarded rather than passed off as a complete reply.
+- **An empty `old_string` could destroy a file.** `search_replace_all` (and `edit_file`) accepted an empty `old_string`; an empty match inserts the replacement between *every character*, so `"def main():"` became `"XdXeXfX XmXaXiXnX(X)X:"`. Both now reject it and point at `write_file`. `search_replace_all` was also missing the empty-path guard its sibling tools already had.
+- **Local thinking models show their reasoning again.** Ollama streams chain-of-thought in a structured `thinking` field rather than `<think>` tags, so it was dropped entirely — qwen3 and gpt-oss appeared to think silently. It is now counted live and summarized, matching the cloud reasoning models.
+
 ## [3.20.1] - 2026-07-02
 
 **Stability audit release.** A second four-agent deep audit plus a full feature-by-feature runtime verification (module loading, command registry, tool dispatch, end-to-end chat loop, bridge). Every clear-cut finding is fixed with a regression test; suite 710 → 729.

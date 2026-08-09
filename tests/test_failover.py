@@ -40,6 +40,8 @@ class TestStreamFailover:
         k._build_claude_messages.return_value = []
         k._build_openai_messages.return_value = []
         k._provider_label = Kodiqa._provider_label.__get__(k)
+        k._attempt_stream = Kodiqa._attempt_stream.__get__(k)
+        k._heal_history.return_value = ""  # nothing to repair in these scenarios
         return k
 
     def test_fails_over_to_next_provider(self):
@@ -159,6 +161,8 @@ class TestStreamInterruptedInit:
         k.model = "qwen3-coder"
         k._stream_interrupted = False  # the default __init__ now guarantees
         k._build_openai_messages.return_value = []
+        k._attempt_stream = Kodiqa._attempt_stream.__get__(k)
+        k._heal_history.return_value = ""
         k._call_openai_compat_stream.return_value = None  # 404 → None, no monitor started
         resp, kind, prov = Kodiqa._stream_native_with_failover(k, "openai", "qwen", "SYS")
         assert resp is None and kind == "openai" and prov == "qwen"
