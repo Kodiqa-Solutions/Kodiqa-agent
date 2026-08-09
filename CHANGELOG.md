@@ -4,6 +4,18 @@ All notable changes to Kodiqa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.22.1] - 2026-08-09
+
+**Models with real local weights are no longer shown as cloud-only.** Suite 845 → 858.
+
+### Fixed
+- **A model you could perfectly well download was sometimes labelled "☁ cloud" and treated as unavailable locally.** When looking up a model's size, Kodiqa could not tell "this model has no local weights" apart from "the lookup didn't answer in time" — both looked identical. A slow answer therefore fell through to the cloud check, which succeeds for most popular models because they publish a `:cloud` tag *alongside* their local weights. `gemma4` — 9.6 GB of real weights — came out as cloud-only. Sizes for a page of models are fetched 24 at a time, so a slower connection hit a different handful of models on each run, which is why it looked random. A lookup that fails now reports "size ?" instead of guessing, and the models that didn't answer are retried with a longer deadline.
+- **A failed download no longer silently switches you to the cloud version of the same model.** If `ollama pull <model>` fails and the registry says that model does have local weights, the real error is reported. Previously Kodiqa retried `<model>:cloud`, which installs instantly, looks like success, and then fails with 401 Unauthorized on first use unless you have run `ollama signin`.
+- Corrected the tool count in the README and docs (27 → 28), with a test so the two claims can't drift apart again.
+
+### Documentation
+- The new-model list is scraped live from ollama.com/library on every launch, ordered by pulls — it is not a list baked into Kodiqa. Documented, along with the correct `update_check_interval_hours` default (0 = check every launch, not 24).
+
 ## [3.22.0] - 2026-08-09
 
 **Every setting is now changeable from the terminal, and a stale config can no longer hold you back.** Suite 826 → 844.

@@ -364,6 +364,12 @@ def version_is_newer(latest, current):
 # ── Changelog ──
 # Canonical changelog is CHANGELOG.md — this list powers the /changelog command
 CHANGELOG = [
+    {"version": "v3.22.1", "date": "2026-08-09", "changes": [
+        "Fix: models with real local weights could be labelled '☁ cloud' and treated as unavailable locally. A size lookup that timed out was indistinguishable from 'no local weights', so it fell through to the cloud check — which succeeds for most popular models, because they publish a :cloud tag alongside their weights. gemma4 (9.6 GB) came out cloud-only. A failed lookup now says 'size ?' and is retried with a longer deadline.",
+        "Fix: a failed 'ollama pull <model>' no longer silently retries <model>:cloud when the registry says the model has local weights — that installed instantly, looked like success, then 401'd on first use without 'ollama signin'. The real download error is reported instead.",
+        "Docs: the new-model list is scraped live from ollama.com/library on every launch (ordered by pulls) — not baked into Kodiqa. Throttle it with /config set update_check_interval_hours <n>; the default is 0 = every launch.",
+        "Docs: corrected the tool count (27 -> 28), locked by a test.",
+    ]},
     {"version": "v3.22.0", "date": "2026-08-09", "changes": [
         "New: /config set <key> <value> changes any setting from the terminal — type-checked, saved, and applied to the next turn without a restart. /config add and /config remove edit list settings; tab completion offers the keys.",
         "New: /config shows settings pinned to an outdated value next to the current default, and /config reset [key] adopts the defaults again (with a backup).",

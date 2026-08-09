@@ -25,6 +25,13 @@ from config import OLLAMA_URL, OLLAMA_BIN, OLLAMA_APP_BIN, ollama_bin_has_mlx, s
 import logging
 _logger = logging.getLogger("kodiqa")
 
+# Returned by _manifest_layers when the LOOKUP failed (timeout, DNS, 5xx) rather
+# than the manifest definitively not existing (404). The two must never be
+# conflated: a timed-out `latest` lookup used to fall through to the `:cloud`
+# probe, which labelled local models (gemma4 — 9.6 GB of real weights) "☁ cloud"
+# and made them un-downloadable.
+_LOOKUP_FAILED = object()
+
 
 class OllamaManager:
     def __init__(self, agent):
@@ -250,19 +257,24 @@ class OllamaManager:
 
     def _manifest_layers(self, repo, tag, timeout):
         """Return a registry manifest's layers list (`[]` when the manifest exists
-        but has no layers, e.g. a cloud pointer), or None when it doesn't exist."""
+        but has no layers, e.g. a cloud pointer), None when it definitively does
+        not exist (404), or `_LOOKUP_FAILED` when we couldn't find out (timeout,
+        connection error, 5xx/429). Callers must not read _LOOKUP_FAILED as
+        "absent" — see the note on the sentinel."""
         try:
             resp = requests.get(
                 f"https://registry.ollama.ai/v2/{repo}/manifests/{tag}",
                 headers={"Accept": "application/vnd.docker.distribution.manifest.v2+json"},
                 timeout=timeout,
             )
-            if resp.status_code != 200:
-                return None
-            return resp.json().get("layers") or []  # null/missing layers → [] (exists)
+            if resp.status_code == 200:
+                return resp.json().get("layers") or []  # null/missing layers → [] (exists)
+            if resp.status_code in (401, 403, 404, 410):
+                return None  # a real answer: this manifest isn't there
+            return _LOOKUP_FAILED  # 429/5xx — the registry, not the model
         except Exception:
             _logger.debug("ignored error fetching manifest", exc_info=True)
-            return None
+            return _LOOKUP_FAILED
 
     def _tags_page_tags(self, name, timeout=8):
         """Scrape ollama.com/library/<name>/tags → ordered list of tag strings
@@ -296,6 +308,11 @@ class OllamaManager:
         if "/" not in repo:
             repo = f"library/{repo}"
         layers = self._manifest_layers(repo, tag, timeout)
+        if layers is _LOOKUP_FAILED:
+            # We never learned anything about this model. Say so ("size ?") instead
+            # of guessing — falling through to the :cloud probe below would label a
+            # perfectly local model cloud-only.
+            return None, False, name
         if layers:  # real local weights
             total = sum(layer.get("size", 0) for layer in layers)
             return (total or None), False, name
@@ -304,7 +321,10 @@ class OllamaManager:
         if tag != "latest":
             return None, False, name  # an explicit tag that genuinely doesn't exist
         # Bare name with no `latest`. Cheap check: a plain `:cloud` tag in the registry.
-        if self._manifest_layers(repo, "cloud", timeout) is not None:
+        cloud_layers = self._manifest_layers(repo, "cloud", timeout)
+        if cloud_layers is _LOOKUP_FAILED:
+            return None, False, name
+        if cloud_layers is not None:
             return None, True, name  # _pull_with_fallbacks handles the :cloud retry
         # Fall back to the library tags page for non-standard tags (e.g. `675b-cloud`,
         # or sized-only models like `granite4.1-guardian:8b`).
@@ -314,6 +334,8 @@ class OllamaManager:
         if local:
             chosen = local[0]  # the page lists the recommended/default tag first
             sz_layers = self._manifest_layers(repo, chosen, timeout)
+            if sz_layers is _LOOKUP_FAILED:
+                sz_layers = None
             size = sum(layer.get("size", 0) for layer in sz_layers) if sz_layers else None
             return (size or None), False, f"{name}:{chosen}"
         if cloud:
@@ -331,12 +353,22 @@ class OllamaManager:
         out = {}
         if not names:
             return out
-        try:
-            with ThreadPoolExecutor(max_workers=min(24, len(names))) as ex:
-                for name, info in zip(names, ex.map(lambda n: self._registry_info(n, timeout=4), names)):
-                    out[name] = info
-        except Exception:
-            _logger.debug("ignored error in _registry_infos", exc_info=True)
+
+        def sweep(todo, timeout, workers):
+            try:
+                with ThreadPoolExecutor(max_workers=min(workers, len(todo))) as ex:
+                    for name, info in zip(todo, ex.map(lambda n: self._registry_info(n, timeout=timeout), todo)):
+                        out[name] = info
+            except Exception:
+                _logger.debug("ignored error in _registry_infos", exc_info=True)
+
+        sweep(names, timeout=6, workers=24)
+        # Anything still unknown is usually a timed-out lookup, not a mystery model —
+        # 24 parallel requests on a slow link routinely blow a short deadline. Retry
+        # just those, with room to breathe, so they don't stay labelled "size ?".
+        retry = [n for n in names if out.get(n, (None, False))[0] is None and not out.get(n, (None, False))[1]]
+        if retry:
+            sweep(retry, timeout=15, workers=8)
         for n in names:
             out.setdefault(n, (None, False, n))
         return out
@@ -560,6 +592,12 @@ class OllamaManager:
         # Retry cloud-only models (no explicit tag + a missing-manifest / MLX error).
         low = out.lower()
         if ":" not in name and ("does not exist" in low or "manifest" in low or "mlx" in low):
+            if self._registry_info(name)[0]:
+                # The registry says this model DOES have local weights, so the pull
+                # failed for some other reason (disk, network, a stalled download).
+                # Switching to :cloud here would hand the user a model that needs
+                # `ollama signin` and 401s — report the real failure instead.
+                return False, name, out.strip(), False
             cloud = f"{name}:cloud"
             self.agent.console.print(f"  [dim]No local weights for {name} — trying cloud model [cyan]{cloud}[/][dim]...[/]")
             rc2, out2, canc2 = self._run_pull(cloud)
@@ -904,15 +942,20 @@ class OllamaManager:
     def check_updates(self, show_welcome=True):
         """Check for model updates and new models on startup.
 
-        Opt-out via --no-update / config check_updates=false, and throttled to run
-        at most once per update_check_interval_hours (default 24) so the per-model
-        `ollama pull` sweep + ollama.com scrape don't block every launch.
+        The "new models" list is scraped live from ollama.com/library on every run
+        (ordered by pulls, most popular first), so it tracks the registry as models
+        are published — it is not a list baked into Kodiqa.
+
+        Opt-out via --no-update / config check_updates=false. update_check_interval_hours
+        throttles it to once per N hours; the default is 0 = check every launch. Raise
+        it with `/config set update_check_interval_hours 24` if the per-model
+        `ollama pull` sweep + the scrape make startup too slow.
         Called with show_welcome=False from /update (mid-session, banner already shown).
         """
 
         if getattr(self.agent, "_skip_updates", False) or not self.agent.config.get("check_updates", True):
             return
-        interval_h = self.agent.config.get("update_check_interval_hours", 24)
+        interval_h = self.agent.config.get("update_check_interval_hours", 0)
         last = self.agent.settings.get("last_update_check", 0)
         if interval_h > 0 and (time.time() - last) < interval_h * 3600:
             return
